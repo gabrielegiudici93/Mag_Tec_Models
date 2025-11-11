@@ -1,0 +1,115 @@
+{
+  "force_mapping_per_stretch_full": [
+    {
+      "stretch_label": "stretch_001",
+      "samples": 594,
+      "rmse": 0.016287451470963655,
+      "std_dev": 0.016278938384619784,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    },
+    {
+      "stretch_label": "stretch_002",
+      "samples": 594,
+      "rmse": 0.0174206300676901,
+      "std_dev": 0.01742019650605059,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    },
+    {
+      "stretch_label": "stretch_003",
+      "samples": 594,
+      "rmse": 0.017330101045136364,
+      "std_dev": 0.01728177616623409,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    }
+  ],
+  "force_mapping_per_stretch_subset": [
+    {
+      "stretch_label": "stretch_001_subset",
+      "samples": 594,
+      "rmse": 0.015362814242596149,
+      "std_dev": 0.015355559715070778,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    },
+    {
+      "stretch_label": "stretch_002_subset",
+      "samples": 594,
+      "rmse": 0.016485275722366906,
+      "std_dev": 0.016477985210519835,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    },
+    {
+      "stretch_label": "stretch_003_subset",
+      "samples": 594,
+      "rmse": 0.016685107349446993,
+      "std_dev": 0.01656055323100651,
+      "force_resolution_est": 0.04999999999999993,
+      "kpm1_pass": true,
+      "kpm2_pass": true
+    }
+  ],
+  "force_mapping_combined_full": {
+    "stretch_label": "combined",
+    "samples": 1782,
+    "rmse": 0.02619721885431613,
+    "std_dev": 0.026172981643662382,
+    "force_resolution_est": 0.04999999999999993,
+    "kpm1_pass": true,
+    "kpm2_pass": true
+  },
+  "force_mapping_combined_subset": {
+    "stretch_label": "combined",
+    "samples": 1782,
+    "rmse": 0.02396357730772225,
+    "std_dev": 0.023932090622607528,
+    "force_resolution_est": 0.04999999999999993,
+    "kpm1_pass": true,
+    "kpm2_pass": true
+  },
+  "offset_classification_per_stretch_full": {},
+  "offset_classification_per_stretch_subset": {},
+  "offset_classification_combined_full": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n  sim_center       1.00      1.00      1.00       535\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "offset_classification_combined_subset": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n  sim_center       1.00      1.00      1.00       535\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "offset_classification_gated_full": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n  sim_center       1.00      1.00      1.00       535\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "offset_classification_gated_subset": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n  sim_center       1.00      1.00      1.00       535\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "stretch_classification_combined_full": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n stretch_001       1.00      1.00      1.00       178\n stretch_002       1.00      1.00      1.00       178\n stretch_003       1.00      1.00      1.00       179\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "stretch_classification_combined_subset": {
+    "samples": 535,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n stretch_001       1.00      1.00      1.00       178\n stretch_002       1.00      1.00      1.00       178\n stretch_003       1.00      1.00      1.00       179\n\n    accuracy                           1.00       535\n   macro avg       1.00      1.00      1.00       535\nweighted avg       1.00      1.00      1.00       535\n"
+  },
+  "kpm_thresholds": {
+    "accuracy_rmse_threshold": 0.1,
+    "precision_std_threshold": 0.05,
+    "sensitivity_target": 0.05
+  }
+}
