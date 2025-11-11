@@ -1,0 +1,28 @@
+{
+  "force_mapping_per_stretch": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 594,
+      "rmse": 0.01628745147096366,
+      "std_dev": 0.016278938384619784
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 594,
+      "rmse": 0.0174206300676901,
+      "std_dev": 0.01742019650605059
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 594,
+      "rmse": 0.017330101045136374,
+      "std_dev": 0.0172817761662341
+    }
+  ],
+  "stretch_classification": {
+    "samples": 1782,
+    "accuracy": 1.0,
+    "report": "                precision    recall  f1-score   support\n\nstretch_000pct       1.00      1.00      1.00       178\nstretch_010pct       1.00      1.00      1.00       178\nstretch_020pct       1.00      1.00      1.00       179\n\n      accuracy                           1.00       535\n     macro avg       1.00      1.00      1.00       535\n  weighted avg       1.00      1.00      1.00       535\n"
+  },
+  "notes": []
+}

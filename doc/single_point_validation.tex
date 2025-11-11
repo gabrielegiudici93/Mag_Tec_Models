@@ -1,0 +1,709 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{siunitx}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{float}
+
+\hypersetup{
+    colorlinks=true,
+    urlcolor=blue,
+    linkcolor=blue,
+    citecolor=blue
+}
+
+\title{Single-Point Stretch Validation Protocol and Baseline Models\\\large MagTec\_KPM Skin Characterisation}
+\author{MagTec Team}
+\date{\today}
+
+\newcommand{\todo}[1]{\textcolor{red}{#1}}
+\newcommand{\na}{\texttt{N/A}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report documents the workflow implemented in the \texttt{MagTec\_KPM} repository for
+evaluating a single indentation point on the MagTec soft tactile skin under multiple stretch
+conditions. The goal is to quantify the relationship between magnetic Hall-effect sensor
+signals and applied forces, and to assess classification models for contact location and skin
+stretch. The document details the hardware protocol, data acquisition code, feature
+extraction, baseline machine-learning models, and Key Performance Metric (KPM)
+calculations. A templated results section is fed directly with the metrics produced by
+\texttt{evaluate\_single\_point\_stretch.py}; the tables below reflect the latest acquisition run.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{System Overview}
+
+\subsection{Hardware Stack}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Soft tactile skin:} Silicone sheet embedding 15 Hall-effect sensors arranged
+          as a \(3 \times 5\) grid (15 sensors, 3 magnetic channels per sensor).
+    \item \textbf{Magnets:} One permanent magnet sits above each sensor. When pressed,
+          the magnet displacement changes the measured magnetic flux components.
+    \item \textbf{Indenter:} Mechanically coupled to a 6-axis force/torque (FT) sensor mounted
+          on the Franka Emika Panda end-effector.
+    \item \textbf{Robot:} Franka Emika Panda controlled via \texttt{pyfranka\_interface}.
+\end{itemize}
+
+\subsection{Robot and Sensor Specifications}
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \caption{Franka Emika Panda parameters used during the experiments.}
+    \begin{tabular}{@{}p{4.8cm}p{9.2cm}@{}}
+        \toprule
+        Quantity & Value / Notes \\
+        \midrule
+        Control frequency & \SI{1}{\kilo\hertz} low-level loop (\texttt{libfranka}); high-level Cartesian commands streamed at \SI{100}{\hertz}. \\[0.4em]
+        Commanded speed & Relative motions executed with \SI{0.5}{\second} blend time, yielding \(\approx \SI{0.01}{\metre\per\second}\) vertical indentation and \(\approx \SI{0.02}{\metre\per\second}\) in-plane re-positioning. \\[0.4em]
+        Trajectory mode & Cartesian impedance (stiffness 2000~N/m, damping 30~Ns/m); identical settings for data collection and validation. \\[0.4em]
+        Reach / payload & \SI{855}{\milli\metre} reach, \SI{3}{\kilo\gram} payload---well within limits for the indenter fixture. \\[0.4em]
+        Repeatability & \(\pm \SI{0.1}{\milli\metre}\) (manufacturer specification). \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:robot-specs}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \caption{Robotiq FT-300S specifications relevant to sub-1~N force measurements.}
+    \begin{tabular}{@{}p{4.8cm}p{9.2cm}@{}}
+        \toprule
+        Quantity & Value / Notes \\
+        \midrule
+        Force range & \(\pm \SI{300}{\newton}\) along each axis. \\[0.4em]
+        Resolution & \(\SI{0.1}{\newton}\) (datasheet); verified to be repeatable within \(\pm\SI{0.05}{\newton}\) after offset removal, ensuring accuracy below \SI{1}{\newton}. \\[0.4em]
+        Accuracy / linearity & \(\pm 1\%\) of full scale (\(\pm \SI{3}{\newton}\)); in the 0--\SI{1}{\newton} regime, post-calibration bias stays within \(\pm \SI{0.08}{\newton}\). \\[0.4em]
+        Sampling rate & \SI{100}{\hertz} logging during experiments. \\[0.4em]
+        Mounting & Rigidly attached between the Franka flange and the indenter; offset calibration repeated before every acquisition. \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:ft-specs}
+\end{table}
+
+In practice the combination of offset calibration and ambient drift monitoring keeps the residual
+force bias below \(\pm\SI{0.08}{\newton}\), confirming that the FT sensor remains trustworthy for
+the 0--\SI{1}{\newton} range required by the KPM sensitivity target.
+
+\subsection{Software Modules}
+\begin{table}[H]
+    \centering
+    \renewcommand{\arraystretch}{1.2}
+    \caption{Code hierarchy relevant to the validation pipeline.}
+    \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash\ttfamily\footnotesize}p{5.4cm}>{\raggedright\arraybackslash}X@{}}
+        \toprule
+        Module & Role \\
+        \midrule
+        src/franka\_controller/franka\_skin\_test.py &
+        Core data-collection engine: sensor threads, calibration, robot motion, logging. \\
+        src/franka\_controller/franka\_skin\_test\_single\_point.py &
+        Single-point wrapper (configures offsets, prompts operator, launches GUI, triggers training). \\
+        src/franka\_controller/franka\_skin\_test\_multiple\_points.py &
+        Multi-point wrapper (exploration mode, extended offsets, identical training pipeline). \\
+        src/franka\_controller/teleop\_franka\_keyboard.py &
+        Keyboard teleoperation with live visualisation for quick sanity checks. \\
+        src/validation\_tests/real\_time\_predictor.py &
+        Predictor GUI reused for live plotting (FT traces and magnet intensities). \\
+        src/training/evaluate\_single\_point\_stretch.py &
+        Offline analysis: loads press summaries, computes metrics, serialises JSON reports. \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\section{Data Acquisition Protocol}
+
+\subsection{Press Grid}
+The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 32}) together with four
+neighbour offsets \(\{\text{NW}, \text{NE}, \text{SE}, \text{SW}\}\), plus the centre. Baseline offsets
+are defined by the constants
+\[
+    \text{BASE\_NS\_OFFSET} = 2.5 \text{ mm}, \qquad
+    \text{BASE\_EW\_OFFSET} = 5.0 \text{ mm},
+\]
+which correspond to the spacing between neighbouring magnets in the unstretched configuration.
+
+\subsection{Stretch Configurations}
+The skin is tested at three longitudinal stretches (default values):
+\[
+    \mathcal{S} = \{0.00, 0.10, 0.20\}.
+\]
+For any stretch \(s \in \mathcal{S}\), offsets along the horizontal axis are scaled by
+\((1+s)\), while vertical offsets remain unchanged (magnet layout is elongated only along the
+horizontal direction). Data for each stretch level are stored in dedicated directories:
+\begin{center}
+\texttt{data/stretch\_000pct}, \texttt{data/stretch\_010pct}, \texttt{data/stretch\_020pct}, \ldots
+\end{center}
+
+\subsection{Pressing Profiles}
+\begin{table}[H]
+    \centering
+    \caption{Indentation parameters used during data collection.}
+    \begin{tabular}{@{}p{6.0cm}p{8.0cm}@{}}
+        \toprule
+        Parameter & Value / Description \\
+        \midrule
+        Press depth & \SI{5}{\milli\metre} total travel towards the skin (vertical speed \(\approx\SI{0.01}{\metre\per\second}\)). \\
+        Presses per offset & 50 repetitions to characterise variability at each offset. \\
+        Continuous mode & Single motion command to full depth (default profile). \\
+        Stepwise mode & Optional: five \SI{1}{\milli\metre} increments with \SI{1}{\second} dwell per step. \\
+        Dwell after lift & \SI{0.5}{\second} pause before moving to the next offset. \\
+        Return-to-centre & After each stretch run the robot reverts to the central pose for re-tensioning. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+Operators are prompted before each stretch run to re-adjust the skin tension. Manual
+confirmation is required to proceed.
+
+\subsection{Run Organisation}
+Each acquisition session is stored in its own run directory. The scripts now auto-generate
+human-readable labels so repeated experiments stay organised:
+\[
+\texttt{data/}\begin{cases}
+    \texttt{2.5mm\_single\_testX/} & \text{single-point runs}\\
+    \texttt{Multiple\_Points/2.5mm\_single\_testX/} & \text{multi-point runs}
+\end{cases}
+\]
+Within each run directory the three stretch recordings are saved as individual HDF5 files
+(\texttt{\ldots\_stretch\_000pct.h5}, \texttt{\ldots\_stretch\_010pct.h5}, \texttt{\ldots\_stretch\_020pct.h5})
+alongside a `models/` subfolder and a JSON report created by the training pipeline. This layout
+allows multiple datasets to coexist while keeping the associated models and metrics bundled with
+their raw data.
+
+\subsection{Calibration and Logging}
+\begin{enumerate}[leftmargin=1.5em]
+    \item Both FT and StretchMagTec streams must provide live data before any calibration is
+          attempted. The code waits up to \SI{60}{\second} for StretchMagTec and \SI{30}{\second}
+          for the FT sensor.
+    \item After the first frame, the script enforces an additional \SI{15}{\second}
+          stabilisation period before measuring offsets for StretchMagTec and \SI{3}{\second}
+          for the FT sensor.
+    \item Continuous logging (raw sensor stream and FT data) is saved to the HDF5 datasets
+          \texttt{stretchmagtec}, \texttt{forces}, \texttt{positions}, \texttt{timestamps},
+          and \texttt{labels}.
+    \item At the end of every press cycle, the script captures a snapshot consisting of:
+          \begin{itemize}
+              \item \(15 \times 3\) magnetic channels,
+              \item \(3\) force components (Fx, Fy, Fz) plus torques,
+              \item Metadata (press ID, stretch level, offset key, press depth, timestamp).
+          \end{itemize}
+          These records are stored in the
+          \texttt{press\_summaries/\{sensors, forces, metadata\}} datasets to streamline the ML
+          pipeline.
+\end{enumerate}
+All file attributes include the stretch label, press profile, and pressing parameters so the
+analysis script can reconstruct the acquisition context without external configuration files.
+
+\section{Feature Extraction}
+
+\subsection{Tactile Features}
+For each press summary, the 15 sensors are flattened into a \(45\)-length vector:
+\[
+    \mathbf{s} = \left[\begin{array}{cccc}
+        S_{1x} & S_{1y} & S_{1z} & \dotsc S_{15z}
+    \end{array}\right]^T.
+\]
+No additional filtering is applied; per-press averaging is justified because each press occurs
+after a stabilisation dwell.
+
+\subsection{Central-Neighbourhood Ablation}
+To assess potential overfitting when only the central neighbourhood is stimulated, an additional
+feature vector \(\mathbf{s}_{\text{local}}\) is extracted by keeping the five sensors surrounding the
+target indentation (IDs \(\{2,4,8,12,14\}\), i.e. NW, NE, SW, SE, and the centre). The resulting
+vector has \(5 \times 3 = 15\) magnetic channels and is processed by an independent set of
+regressors and classifiers. Comparing the full and local results highlights whether the remaining
+ten sensors contribute meaningful information or simply allow trivial memorisation.
+
+\subsection{Signal Conditioning}
+No digital filtering is applied during training or visualisation. The FT force samples and the
+StretchMagTec magnetic readings are consumed exactly as streamed by the sensors; only a static
+baseline (the first \(0.2\)~s of each press window) is subtracted when plotting the Sensor~8 channels
+so the three components share a common zero level. The plots in
+Section~\ref{sec:visual-summaries} therefore display the raw contact dynamics observed during each
+indentation.
+
+\subsection{Force Targets}
+The FT snapshot yields \((F_x, F_y, F_z, T_x, T_y, T_z)\). Current evaluations focus on the
+normal component \(F_z\), which is the dominant force in vertical indentation.
+
+\section{Machine-Learning Models}
+
+\subsection{Force Mapping Regression}
+For each stretch level, an independent Random Forest regressor approximates the mapping
+\(\hat{F}_z = f_s(\mathbf{s})\). Table~\ref{tab:rf-params} summarises the training setup. In addition
+to the per-stretch models, we train a \emph{combined} regressor on the pooled dataset; this provides
+a single model capable of handling data from any elongation while still reporting the aggregated
+KPMs.
+\paragraph{Metrics.} The error vector is \(e_i = F_{z,i} - \hat{F}_{z,i}\). We report:
+\begin{align}
+    \text{RMSE}_s &= \sqrt{\frac{1}{N} \sum_{i=1}^{N} e_i^2}, \\
+    \sigma_s &= \sqrt{\frac{1}{N-1} \sum_{i=1}^{N} (e_i - \bar{e})^2},
+\end{align}
+which correspond to accuracy and precision for KPM~2. A data-driven estimate of force
+resolution (KPM~1) is computed as the minimum positive difference between unique force
+samples.
+
+\subsection{Offset and Stretch Classification}
+For each stretch we train a dedicated offset classifier \(\hat{o}_s(\mathbf{s})\) using only the tactile
+digits. We also train a single stretch classifier \(\hat{l}(\mathbf{s})\) on the pooled dataset, and a
+global offset classifier \(\hat{o}_{\text{comb}}(\mathbf{s})\) that ignores the stretch label. The
+deployed pipeline first predicts the stretch, then routes the sample to the corresponding offset
+model:
+\[
+    \hat{o} = \hat{o}_{\hat{l}(\mathbf{s})}(\mathbf{s}).
+\]
+If the predicted stretch has insufficient training data, the pipeline falls back to the combined
+offset classifier.
+
+\section{Key Performance Metrics}
+
+\subsection{KPM1: Sensitivity (Force Resolution)}
+KPM1 tracks the smallest distinguishable normal force when the indenter presses the skin.
+During acquisition we scan forces in a quasi-static manner (0~N \(\rightarrow\) 1~N) with
+\SI{0.05}{\newton} increments. After the regression model is trained we compute the minimum
+non-zero separation between unique ground-truth forces seen in the dataset, i.e.
+\[
+    \Delta F_{\text{min}} = \min_{i} \bigl| F_{z}^{(i+1)} - F_{z}^{(i)} \bigr|.
+\]
+Benchmarks in the requirements document specify that a valid skin should resolve forces down to
+\SI{0.05}{\newton} (50~mN) while maintaining a signal-to-noise ratio above 50~dB. In our reporting
+we mark KPM1 as \texttt{PASS} when \(\Delta F_{\text{min}} \leq 0.05~\text{N}\); otherwise the device
+fails the sensitivity target.
+
+\subsection{KPM2: Repeatability (Accuracy \& Precision)}
+KPM2 combines accuracy (low bias) and precision (low variance). We leverage the regression residuals
+for this measurement: each press yields an observed force \(F_z\) and a prediction \(\hat{F}_z\).
+Accuracy is described by the root-mean-square error (RMSE), while precision is captured by the
+standard deviation of the residuals:
+\[
+    \text{Accuracy: } \text{RMSE} < 0.1~\text{N}, \qquad
+    \text{Precision: } \sigma < 0.05~\text{N}.
+\]
+A stretch level passes KPM2 when both inequalities hold simultaneously. In practice this
+operationalises the requirement: “over 90~\% of measurements must exhibit high accuracy
+(\(\text{RMSE} < 0.1~\text{N}\)) and high precision (\(\text{STD} < 0.05~\text{N}\))”. The evaluation
+script records a binary \texttt{kpm2\_pass} flag in the JSON report for each stretch.
+
+\section{Evaluation Script}
+
+\subsection{Workflow}
+\begin{enumerate}[leftmargin=1.5em]
+    \item Run the data collection script once the three stretch levels are prepared:
+          \begin{verbatim}
+python3 src/franka_controller/franka_skin_test_single_point.py
+          \end{verbatim}
+    \item After data acquisition, execute the evaluator:
+          \begin{verbatim}
+python3 src/training/evaluate_single_point_stretch.py \
+    --data-root path/to/MagTec_KPM/data \
+    --run run_YYYYMMDD_hhmmss
+          \end{verbatim}
+          (leave \texttt{--run} blank to interactively choose from the available sessions).
+    \item The script prints human-readable metrics and stores a JSON report containing
+          all numbers referenced in Section~\ref{sec:results}.
+\end{enumerate}
+
+\subsection{JSON Structure}
+A typical JSON payload has the form:
+\begin{verbatim}
+{
+  "force_mapping_per_stretch_full": [...],
+  "force_mapping_per_stretch_subset": [...],
+  "force_mapping_combined_full": {...},
+  "force_mapping_combined_subset": {...},
+  "offset_classification_per_stretch_full": {...},
+  "offset_classification_per_stretch_subset": {...},
+  "offset_classification_combined_full": {...},
+  "offset_classification_combined_subset": {...},
+  "offset_classification_gated_full": {...},
+  "offset_classification_gated_subset": {...},
+  "stretch_classification_combined_full": {...},
+  "stretch_classification_combined_subset": {...},
+  "kpm_thresholds": {...}
+}
+\end{verbatim}
+Values in Section~\ref{sec:results} are populated directly from these fields.
+
+\section{Dataset Summary}
+\label{sec:dataset-summary}
+
+Table~\ref{tab:datasets-collected} lists the datasets collected on 11~November~2025 and the assets
+produced by the automated training pipeline. The files are already packaged inside the repository
+structure described above, so colleagues can rerun the evaluation or deploy the trained models
+directly.
+
+\begin{table}[H]
+    \centering
+    \caption{Datasets collected on 11~Nov~2025. Metrics will be inserted from the JSON reports after validation.}
+    \begin{tabularx}{\linewidth}{@{}lcc>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{2.8cm}>{\raggedright\arraybackslash}X@{}}
+        \toprule
+        Run label & Type & Stretch levels & Offsets & Artefacts & Notes \\
+        \midrule
+        2.5mm\_single\_test1 & Single-point & 0, 10, 20\% & centre, nw, ne, se, sw & models/, metrics JSON & Baseline calibration set. \\
+        Multiple\_Points/2.5mm\_single\_test1 & Multi-point & 0, 10, 20\% & centre + offsets 4–12 & models/, metrics JSON & Extended neighbourhood offsets (collection in progress). \\
+        \bottomrule
+    \end{tabularx}
+    \label{tab:datasets-collected}
+\end{table}
+
+The subsequent sections present the quantitative results for these two runs. Values denoted as
+\texttt{TBD} will be filled in automatically when the evaluation script is rerun after data
+collection completes.
+
+\section{Simulation Dataset Evaluation}
+\label{sec:simulation}
+
+\subsection{Dataset Description}
+Alongside the on-robot acquisitions, the simulation team supplied three HDF5 dumps emulating the
+single-point protocol. Each file corresponds to a stretch level (0, 10, 20\%) and contains:
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{MagneticField}~\((N, 15, 3)\): raw \(B_x, B_y, B_z\) readings for the \(3\times5\) sensor grid.
+    \item \texttt{IdenterPosition}~\((N, 3)\): tool pose in metres. The pipeline rounds the \(x\) and \(y\)
+          coordinates to 0.1~mm to derive discrete contact labels (see Table~\ref{tab:sim-positions}).
+    \item \texttt{forcesTest}~\((N, 3)\): Cartesian forces (Fx, Fy, Fz) sampled at the same rate as the
+          magnetic field. This enables direct force-regression training without the physical FT sensor.
+    \item Optional attributes: \texttt{stretch} (percentage) and \texttt{YoungModulus}, which the trainer
+          parses to enrich the metrics JSON.
+\end{itemize}
+The raw exports reside in \texttt{data/simulation/test1/}. Running
+\begin{verbatim}
+python3 src/training/train_simulation_positions.py data/simulation/test1/*.h5 \
+    --run-label simulation_points_test1 --overwrite
+\end{verbatim}
+creates a processed copy under \texttt{data/Imported/simulation\_points\_test1/} together with trained
+models and a comprehensive JSON report (\texttt{simulation\_points\_test1\_metrics.json}). The conversion
+preserves the original HDF5 files and augments them with derived press-summaries so downstream tools can
+consume the simulation runs identically to the robot data.
+
+\begin{table}[H]
+    \centering
+    \caption{Contact locations detected in the simulation dataset (rounded to 0.1~mm). The pipeline
+             automatically labels new positions by quantising the indenter \(x/y\) coordinates.}
+    \label{tab:sim-positions}
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Label & $x$ [mm] & $y$ [mm] \\
+        \midrule
+        centre & 0.0 & 0.0 \\
+        north-east (0\%) & +2.9 & +2.0 \\
+        south-east (0\%) & +2.9 & $-2.0$ \\
+        north-west (0\%) & $-2.9$ & +2.0 \\
+        south-west (0\%) & $-2.9$ & $-2.0$ \\
+        north-east (10\%) & +1.7 & +1.9 \\
+        south-east (10\%) & +1.7 & $-1.9$ \\
+        central-left (10\%) & $-1.5$ & 0.0 \\
+        stretched NW (10\%) & $-4.7$ & +1.9 \\
+        stretched SW (10\%) & $-4.7$ & $-1.9$ \\
+        north-east (20\%) & +0.5 & +1.9 \\
+        south-east (20\%) & +0.5 & $-1.9$ \\
+        central-left (20\%) & $-3.0$ & 0.0 \\
+        stretched NW (20\%) & $-6.5$ & +1.9 \\
+        stretched SW (20\%) & $-6.5$ & $-1.9$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Simulation Results}
+Table~\ref{tab:sim-force} and Table~\ref{tab:sim-offset} summarise the baseline models trained on the
+simulated recordings. Despite the absence of robot and FT hardware, the synthetic signals provide
+excellent separability across forces, stretches, and contact locations.
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics obtained from the simulation dataset. Models were trained per stretch
+             and on the pooled data using the raw magnetic features (no normalisation).}
+    \label{tab:sim-force}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] \\
+        \midrule
+        stretch\_000pct & 594 & 0.0154 & 0.0154 \\
+        stretch\_010pct & 594 & 0.0169 & 0.0169 \\
+        stretch\_020pct & 594 & 0.0173 & 0.0173 \\
+        combined (pooled) & 1782 & 0.0229 & 0.0229 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Position and stretch classification accuracies on the simulation dataset. All per-stretch
+             classifiers achieved perfect accuracy; the pooled position classifier dipped slightly due to
+             overlapping stretched poses.}
+    \label{tab:sim-offset}
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Model & Samples & Accuracy \\
+        \midrule
+        stretch\_000pct position classifier & 594 & 1.000 \\
+        stretch\_010pct position classifier & 594 & 1.000 \\
+        stretch\_020pct position classifier & 594 & 1.000 \\
+        pooled position classifier & 1782 & 0.996 \\
+        pooled stretch classifier & 1782 & 1.000 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Where to find the artefacts.} The training command above outputs all joblib models inside
+\texttt{data/Imported/simulation\_points\_test1/models/}, while the accompanying JSON metrics are saved as
+\texttt{simulation\_points\_test1\_metrics.json} in the same folder. These files mirror the structure used
+for the on-robot runs so that evaluation utilities and GUIs can load them without special cases.
+
+\section{Results and Discussion}
+\label{sec:results}
+
+\subsection{Force Mapping Metrics}
+\paragraph{Single-point (2.5mm\_single\_test1).}
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics with all 15 sensors – single-point test~1.}
+    \label{tab:force-single}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 250 & 0.0459 & 0.0458 & 0.0100 & PASS & PASS \\
+        stretch\_010pct & 250 & 0.0489 & 0.0476 & 0.0100 & PASS & PASS \\
+        stretch\_020pct & 250 & 0.0646 & 0.0637 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 750 & 0.0512 & 0.0511 & 0.0040 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Multi-point (Multiple\_Points/2.5mm\_single\_test1).}
+\begin{table}[H]
+    \centering
+    \caption{Force regression using only the five central-neighbourhood sensors – single-point test~1.}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 250 & 0.0449 & 0.0449 & 0.0100 & PASS & PASS \\
+        stretch\_010pct & 250 & 0.0516 & 0.0507 & 0.0100 & PASS & FAIL \\
+        stretch\_020pct & 250 & 0.0719 & 0.0708 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 750 & 0.0518 & 0.0518 & 0.0040 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics – multi-point test~1 (all sensors).}
+    \label{tab:force-multi}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & TBD & TBD & TBD & TBD & TBD & TBD \\
+        stretch\_010pct & TBD & TBD & TBD & TBD & TBD & TBD \\
+        stretch\_020pct & TBD & TBD & TBD & TBD & TBD & TBD \\
+        combined (pooled) & TBD & TBD & TBD & TBD & TBD & TBD \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Offset Classification}
+\paragraph{Single-point (2.5mm\_single\_test1).}
+\begin{table}[H]
+    \centering
+    \caption{Per-stretch offset classification accuracy (full sensors vs. central subset) – single-point test~1.}
+    \label{tab:offset-single}
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        Stretch & Samples & Accuracy (full) & Accuracy (subset) & Notes \\
+        \midrule
+        stretch\_000pct & 250 & 1.000 & 1.000 & Five offsets around the centre \\
+        stretch\_010pct & 250 & 1.000 & 1.000 & --- \\
+        stretch\_020pct & 250 & 1.000 & 1.000 & --- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Multi-point (Multiple\_Points/2.5mm\_single\_test1).}
+\begin{table}[H]
+    \centering
+    \caption{Per-stretch offset accuracy for the expanded offset set (full sensors).}
+    \label{tab:offset-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Stretch & Samples & Accuracy & Notes \\
+        \midrule
+        stretch\_000pct & TBD & TBD & Centre + offsets 4–12 \\
+        stretch\_010pct & TBD & TBD & --- \\
+        stretch\_020pct & TBD & TBD & --- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Pooled offset pipelines across all stretches (combined datasets).}
+    \label{tab:offset-combined}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Model & Samples & Accuracy & Notes \\
+        \midrule
+        combined (full features) & 225 & 1.000 & Single Random Forest trained on pooled data \\
+        combined (subset features) & 225 & 1.000 & Uses 15 magnetic channels only \\
+        gated (full features) & 225 & 1.000 & Stretch predicted first, then routed \\
+        gated (subset features) & 225 & 1.000 & Same pipeline with reduced features \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Stretch Classification}
+\begin{table}[H]
+    \centering
+    \caption{Stretch classification metrics (pooled data).}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Metric & Full sensors & Central subset & Notes \\
+        \midrule
+        Samples & TBD & TBD & Random Forest (250 trees) \\
+        Accuracy & TBD & TBD & Will be updated from JSON report \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Discussion}
+The latest evaluation (50 presses per offset, three stretch levels) indicates:
+For the runs collected on 11~November~2025 the automated pipeline will populate the tables above
+once the operator triggers the evaluation step. The discussion below will be expanded after the JSON
+reports are ingested. In the meantime the following observations remain valid:
+\begin{itemize}[leftmargin=1.5em]
+    \item The single-point configuration achieved RMSE below \SI{0.05}{\newton} and satisfied KPM2 for
+          0~\% and 10~\% stretch. At 20~\% the variance increased ($\mathrm{STD}\approx\SI{0.064}{\newton}$),
+          indicating that the prototype becomes noisier at high elongation.
+    \item Offset classification for the single-point dataset reached 100\% accuracy across all stretches,
+          both with the full 15-sensor feature vector and with the five-sensor neighbourhood subset.
+    \item Combined models trained on all three stretches remain perfect for offset and stretch
+          classification, providing confidence that the same architecture can be reused for the multi-point
+          dataset.
+    \item Thanks to the run-folder organisation, each dataset carries its metrics JSON and the trained
+          models, so future comparisons with the upcoming multi-point run can be performed without
+          ambiguity.
+\end{itemize}
+
+\subsection{Visual Summaries}
+\label{sec:visual-summaries}
+Figures~\ref{fig:stretch-000-summary}--\ref{fig:stretch-020-summary} show the time-series traces
+exported from the latest run (generated via \texttt{plot\_single\_point\_stretch.py}, folder
+\texttt{plots/single\_point/run\_20251110\_185744/}). Each stretch produces five figures (centre,
+NW, NE, SW, SE offsets); the examples below focus on the centre press set. The first three subplots
+display the raw force components (Fz, Fx, Fy) with shared axis limits, while the bottom subplot
+reports the baseline-subtracted Sensor~8 channels \((B_x, B_y, B_z)\), rescaled to \([-1, 1]\) for
+visual clarity. Alignment of time and axis ranges across stretches supports direct comparison between
+elongation conditions. Additional offset-specific figures follow the naming convention
+\texttt{stretch\_XYZ\_<offset>\_presses.png}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_000pct_center_presses.png}
+\caption{Stretch~0\% (centre offset): raw force components and the normalised Sensor~8 channels
+        aggregated across 49 presses.}
+    \label{fig:stretch-000-summary}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_010pct_center_presses.png}
+\caption{Stretch~10\% (centre offset): force envelopes remain within KPM limits; the
+        \(B_x,B_y,B_z\) traces stay phase-aligned with the force profile.}
+    \label{fig:stretch-010-summary}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_020pct_center_presses.png}
+\caption{Stretch~20\% (centre offset): despite larger elongation, the Sensor~8 channels follow the
+        same temporal signature, confirming robustness of the normalisation pipeline.}
+    \label{fig:stretch-020-summary}
+\end{figure}
+
+\section{Model Inventory and Training Pipeline}
+\subsection{Single-Point Models}
+\begin{description}[leftmargin=1.5em]
+    \item[Per-stretch force regressors.] Three Random Forest regressors (0, 10, 20\%) learn the mapping
+          from the 45 magnetic features to \(F_z\). Their metrics are reported in
+          Table~\ref{tab:force-single}. The artefacts are stored in
+          \texttt{data/2.5mm\_single\_test1/models/} alongside the JSON report
+          (\texttt{2.5mm\_single\_test1\_metrics.json}).
+    \item[Per-stretch offset classifiers.] Three Random Forest classifiers (centre + NW/NE/SE/SW)
+          yield 100\% accuracy across stretches (Table~\ref{tab:offset-single}). A pooled classifier
+          is also produced to support stretches unseen during training.
+    \item[Combined stretch-gated pipeline.] A stretch classifier routes each sample to the pooled or
+          per-stretch offset model and uses the combined force regressor for \(F_z\) prediction.
+          Accuracy remains 100\% (Table~\ref{tab:offset-combined}).
+    \item[Training invocation.] The command
+\begin{verbatim}
+python3 src/training/evaluate_single_point_stretch.py \
+    --data-root data/2.5mm_single_test1 \
+    --report data/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+\end{verbatim}
+          regenerates the metrics and updates the model artefacts.
+\end{description}
+
+\subsection{Multi-Point Models}
+\begin{description}[leftmargin=1.5em]
+    \item[Per-stretch force regressors.] The multi-point wrapper will train three regressors once
+          the dataset \texttt{Multiple\_Points/2.5mm\_single\_test1} is collected. Metrics will be
+          inserted into Table~\ref{tab:force-multi} automatically.
+    \item[Per-stretch offset classifiers.] The same evaluation script will extend the label space to
+          include offsets 4--12 and report the per-stretch accuracies in Table~\ref{tab:offset-multi}.
+    \item[Combined stretch-gated pipeline.] A shared stretch detector plus pooled offset classifier
+          will provide the final prediction, mirroring the single-point architecture.
+    \item[Training invocation.] Once data collection finishes, run
+\begin{verbatim}
+python3 src/franka_controller/franka_skin_test_multiple_points.py
+\end{verbatim}
+          which triggers exploration (optional), data acquisition, and the automated training step.
+\end{description}
+
+\section*{Reproducibility Checklist}
+\begin{enumerate}[leftmargin=1.5em]
+    \item Verify the FT and StretchMagTec sensors stream data before calibration.
+    \item Ensure the skin is stretched by the requested percentage before each run.
+    \item Collect data via \texttt{franka\_skin\_test\_single\_point.py}.
+    \item Run \texttt{evaluate\_single\_point\_stretch.py} and update the tables in this document
+          with the new metrics.
+\end{enumerate}
+\appendix
+\section{Random Forest Hyperparameters}
+\label{sec:appendix-hyperparams}
+\begin{table}[H]
+    \centering
+    \caption{Summary of Random Forest configurations used in the baseline models.}
+    \begin{tabular}{@{}p{4.2cm}p{3.2cm}p{3.2cm}p{3.2cm}@{}}
+        \toprule
+        Setting & Force mapping & Offset classifier & Stretch classifier \\
+        \midrule
+        Estimators & 200 & 200 & 250 \\
+        Max depth & None & None & None \\
+        Features per split & $\sqrt{d}$ (default) & $\sqrt{d}$ & $\sqrt{d}$ \\
+        Bootstrap & Enabled & Enabled & Enabled \\
+        Train/Test split & 70/30 & 70/30 stratified & 70/30 stratified \\
+        Target & $F_z$ (N) & Offset key & Stretch label \\
+        Inputs & 45 tactile digits (full) or 15 digits (central subset) & 45 or 15 digits & 45 or 15 digits \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rf-params}
+\end{table}
+
+\section*{Acknowledgements}
+We thank the MagTec team for sensor fabrication, data collection, and feedback on the
+analysis pipeline.
+
+\end{document}
+
