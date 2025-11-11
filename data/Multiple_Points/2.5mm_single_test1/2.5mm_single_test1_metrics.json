@@ -1,0 +1,153 @@
+{
+  "force_mapping_per_stretch_full": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 650,
+      "rmse": 0.062418656453574785,
+      "std_dev": 0.06232202110497138,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 650,
+      "rmse": 0.0635921806016547,
+      "std_dev": 0.06347528249990161,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 650,
+      "rmse": 0.06401575808473474,
+      "std_dev": 0.06381429500812433,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    }
+  ],
+  "force_mapping_per_stretch_subset": [
+    {
+      "stretch_label": "stretch_000pct_subset",
+      "samples": 650,
+      "rmse": 0.06620241465862603,
+      "std_dev": 0.0661819955460078,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    },
+    {
+      "stretch_label": "stretch_010pct_subset",
+      "samples": 650,
+      "rmse": 0.06588640783382343,
+      "std_dev": 0.06580906126003488,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    },
+    {
+      "stretch_label": "stretch_020pct_subset",
+      "samples": 650,
+      "rmse": 0.06344746531258617,
+      "std_dev": 0.06268449374135232,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false
+    }
+  ],
+  "force_mapping_combined_full": {
+    "stretch_label": "combined",
+    "samples": 1950,
+    "rmse": 0.0782866162670101,
+    "std_dev": 0.07828199969802314,
+    "force_resolution_est": 0.0009999999999994458,
+    "kpm1_pass": true,
+    "kpm2_pass": false
+  },
+  "force_mapping_combined_subset": {
+    "stretch_label": "combined",
+    "samples": 1950,
+    "rmse": 0.061515751396381886,
+    "std_dev": 0.06150051900743029,
+    "force_resolution_est": 0.0009999999999994458,
+    "kpm1_pass": true,
+    "kpm2_pass": false
+  },
+  "offset_classification_per_stretch_full": {
+    "stretch_000pct": {
+      "stretch_label": "stretch_000pct",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    },
+    "stretch_010pct": {
+      "stretch_label": "stretch_010pct",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    },
+    "stretch_020pct": {
+      "stretch_label": "stretch_020pct",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    }
+  },
+  "offset_classification_per_stretch_subset": {
+    "stretch_000pct": {
+      "stretch_label": "stretch_000pct_subset",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    },
+    "stretch_010pct": {
+      "stretch_label": "stretch_010pct_subset",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    },
+    "stretch_020pct": {
+      "stretch_label": "stretch_020pct_subset",
+      "samples": 650,
+      "accuracy": 1.0,
+      "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        15\n          11       1.00      1.00      1.00        15\n          12       1.00      1.00      1.00        15\n           4       1.00      1.00      1.00        15\n           5       1.00      1.00      1.00        15\n           6       1.00      1.00      1.00        15\n           7       1.00      1.00      1.00        16\n           9       1.00      1.00      1.00        15\n      center       1.00      1.00      1.00        15\n          ne       1.00      1.00      1.00        15\n          nw       1.00      1.00      1.00        15\n          se       1.00      1.00      1.00        15\n          sw       1.00      1.00      1.00        15\n\n    accuracy                           1.00       196\n   macro avg       1.00      1.00      1.00       196\nweighted avg       1.00      1.00      1.00       196\n"
+    }
+  },
+  "offset_classification_combined_full": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        52\n          11       1.00      1.00      1.00        46\n          12       1.00      1.00      1.00        41\n           4       1.00      1.00      1.00        41\n           5       1.00      1.00      1.00        40\n           6       1.00      1.00      1.00        44\n           7       1.00      1.00      1.00        40\n           9       1.00      1.00      1.00        50\n      center       1.00      1.00      1.00        46\n          ne       1.00      1.00      1.00        43\n          nw       1.00      1.00      1.00        50\n          se       1.00      1.00      1.00        41\n          sw       1.00      1.00      1.00        51\n\n    accuracy                           1.00       585\n   macro avg       1.00      1.00      1.00       585\nweighted avg       1.00      1.00      1.00       585\n"
+  },
+  "offset_classification_combined_subset": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        52\n          11       1.00      1.00      1.00        46\n          12       1.00      1.00      1.00        41\n           4       1.00      1.00      1.00        41\n           5       1.00      1.00      1.00        40\n           6       1.00      1.00      1.00        44\n           7       1.00      1.00      1.00        40\n           9       1.00      1.00      1.00        50\n      center       1.00      1.00      1.00        46\n          ne       1.00      1.00      1.00        43\n          nw       1.00      1.00      1.00        50\n          se       1.00      1.00      1.00        41\n          sw       1.00      1.00      1.00        51\n\n    accuracy                           1.00       585\n   macro avg       1.00      1.00      1.00       585\nweighted avg       1.00      1.00      1.00       585\n"
+  },
+  "offset_classification_gated_full": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        52\n          11       1.00      1.00      1.00        46\n          12       1.00      1.00      1.00        41\n           4       1.00      1.00      1.00        41\n           5       1.00      1.00      1.00        40\n           6       1.00      1.00      1.00        44\n           7       1.00      1.00      1.00        40\n           9       1.00      1.00      1.00        50\n      center       1.00      1.00      1.00        46\n          ne       1.00      1.00      1.00        43\n          nw       1.00      1.00      1.00        50\n          se       1.00      1.00      1.00        41\n          sw       1.00      1.00      1.00        51\n\n    accuracy                           1.00       585\n   macro avg       1.00      1.00      1.00       585\nweighted avg       1.00      1.00      1.00       585\n"
+  },
+  "offset_classification_gated_subset": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "              precision    recall  f1-score   support\n\n          10       1.00      1.00      1.00        52\n          11       1.00      1.00      1.00        46\n          12       1.00      1.00      1.00        41\n           4       1.00      1.00      1.00        41\n           5       1.00      1.00      1.00        40\n           6       1.00      1.00      1.00        44\n           7       1.00      1.00      1.00        40\n           9       1.00      1.00      1.00        50\n      center       1.00      1.00      1.00        46\n          ne       1.00      1.00      1.00        43\n          nw       1.00      1.00      1.00        50\n          se       1.00      1.00      1.00        41\n          sw       1.00      1.00      1.00        51\n\n    accuracy                           1.00       585\n   macro avg       1.00      1.00      1.00       585\nweighted avg       1.00      1.00      1.00       585\n"
+  },
+  "stretch_classification_combined_full": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "                precision    recall  f1-score   support\n\nstretch_000pct       1.00      1.00      1.00       195\nstretch_010pct       1.00      1.00      1.00       195\nstretch_020pct       1.00      1.00      1.00       195\n\n      accuracy                           1.00       585\n     macro avg       1.00      1.00      1.00       585\n  weighted avg       1.00      1.00      1.00       585\n"
+  },
+  "stretch_classification_combined_subset": {
+    "samples": 585,
+    "accuracy": 1.0,
+    "report": "                precision    recall  f1-score   support\n\nstretch_000pct       1.00      1.00      1.00       195\nstretch_010pct       1.00      1.00      1.00       195\nstretch_020pct       1.00      1.00      1.00       195\n\n      accuracy                           1.00       585\n     macro avg       1.00      1.00      1.00       585\n  weighted avg       1.00      1.00      1.00       585\n"
+  },
+  "kpm_thresholds": {
+    "accuracy_rmse_threshold": 0.1,
+    "precision_std_threshold": 0.05,
+    "sensitivity_target": 0.05
+  }
+}
