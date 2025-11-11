@@ -37,9 +37,10 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import h5py
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
@@ -270,6 +271,7 @@ def evaluate_combined_pipeline(
     stretches: np.ndarray,
     fz: np.ndarray,
     train_ratio: float = 0.7,
+    return_models: bool = False,
 ):
     indices = np.arange(len(X))
     train_idx, test_idx = train_test_split(
@@ -387,12 +389,22 @@ def evaluate_combined_pipeline(
         "report": gated_report,
     }
 
-    return {
+    metrics_payload = {
         "combined_force_metrics": combined_force_metrics,
         "combined_stretch_metrics": combined_stretch_metrics,
         "combined_offset_metrics": combined_offset_metrics,
         "gated_offset_metrics": gated_offset_metrics,
     }
+    models_payload = {
+        "force_model": force_model,
+        "stretch_model": stretch_model,
+        "combined_offset_model": combined_offset_model,
+        "per_stretch_models": per_stretch_models,
+    }
+
+    if return_models:
+        return metrics_payload, models_payload
+    return metrics_payload, None
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -418,6 +430,11 @@ def parse_args():
         type=Path,
         default=REPORTS_DIR / "single_point_stretch_metrics.json",
         help="Path to save JSON report (default: logs/reports/...).",
+    )
+    parser.add_argument(
+        "--export-models",
+        action="store_true",
+        help="Persist trained models into <run_dir>/models/ for downstream use.",
     )
     return parser.parse_args()
 
@@ -461,6 +478,11 @@ def main():
     else:
         run_dir = data_root
 
+    models_dir: Optional[Path] = None
+    if args.export_models:
+        models_dir = run_dir / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
     print("=" * 80)
     print(f"Single-point stretch evaluation")
     print(f"Data root: {data_root}")
@@ -473,6 +495,10 @@ def main():
     force_results_subset = []
     offset_results_per_stretch_full = {}
     offset_results_per_stretch_subset = {}
+    force_models_full = {}
+    force_models_subset = {}
+    offset_models_full = {}
+    offset_models_subset = {}
     for stretch_label, df in grouped.items():
         try:
             X_full = np.stack(df["sensor_vector"].to_numpy())
@@ -480,18 +506,24 @@ def main():
             fz_vals = df["fz"].to_numpy()
             offsets_vals = df["offset_key"].to_numpy()
 
-            metrics_full, _ = train_force_regressor(X_full, fz_vals, stretch_label)
-            metrics_subset, _ = train_force_regressor(X_subset, fz_vals, f"{stretch_label}_subset")
+            metrics_full, model_full = train_force_regressor(X_full, fz_vals, stretch_label)
+            metrics_subset, model_subset = train_force_regressor(X_subset, fz_vals, f"{stretch_label}_subset")
             force_results_full.append(metrics_full)
             force_results_subset.append(metrics_subset)
+            if args.export_models:
+                force_models_full[stretch_label] = model_full
+                force_models_subset[f"{stretch_label}_subset"] = model_subset
         except Exception as exc:
             print(f"❌ Error evaluating force mapping for {stretch_label}: {exc}")
 
         try:
-            metrics_offset_full, _ = train_offset_classifier(X_full, offsets_vals, stretch_label)
-            metrics_offset_subset, _ = train_offset_classifier(X_subset, offsets_vals, f"{stretch_label}_subset")
+            metrics_offset_full, offset_model_full = train_offset_classifier(X_full, offsets_vals, stretch_label)
+            metrics_offset_subset, offset_model_subset = train_offset_classifier(X_subset, offsets_vals, f"{stretch_label}_subset")
             offset_results_per_stretch_full[stretch_label] = metrics_offset_full
             offset_results_per_stretch_subset[stretch_label] = metrics_offset_subset
+            if args.export_models:
+                offset_models_full[stretch_label] = offset_model_full
+                offset_models_subset[f"{stretch_label}_subset"] = offset_model_subset
         except Exception as exc:
             print(f"❌ Error training offset classifier for {stretch_label}: {exc}")
 
@@ -501,17 +533,19 @@ def main():
     combined_stretches = combined_df["stretch_label"].to_numpy()
     combined_fz = combined_df["fz"].to_numpy()
 
-    combined_results_full = evaluate_combined_pipeline(
+    combined_results_full, combined_models_full = evaluate_combined_pipeline(
         combined_X_full,
         combined_offsets,
         combined_stretches,
         combined_fz,
+        return_models=args.export_models,
     )
-    combined_results_subset = evaluate_combined_pipeline(
+    combined_results_subset, combined_models_subset = evaluate_combined_pipeline(
         combined_X_subset,
         combined_offsets,
         combined_stretches,
         combined_fz,
+        return_models=args.export_models,
     )
 
     # ------------------------------------------------------------------
@@ -606,6 +640,58 @@ def main():
     print(f"Subset features → Samples: {combined_stretch_metrics_subset['samples']}")
     print(f"Accuracy: {combined_stretch_metrics_subset['accuracy']:.3f}")
     print(combined_stretch_metrics_subset["report"])
+
+    if args.export_models and models_dir is not None:
+        for label, model in force_models_full.items():
+            joblib.dump(model, models_dir / f"force_regressor_{label}.joblib")
+        for label, model in force_models_subset.items():
+            joblib.dump(model, models_dir / f"force_regressor_{label}.joblib")
+        for label, model in offset_models_full.items():
+            joblib.dump(model, models_dir / f"offset_classifier_{label}.joblib")
+        for label, model in offset_models_subset.items():
+            joblib.dump(model, models_dir / f"offset_classifier_{label}.joblib")
+
+        if combined_models_full:
+            joblib.dump(
+                combined_models_full["force_model"],
+                models_dir / "force_regressor_combined.joblib",
+            )
+            joblib.dump(
+                combined_models_full["stretch_model"],
+                models_dir / "stretch_classifier_combined.joblib",
+            )
+            joblib.dump(
+                combined_models_full["combined_offset_model"],
+                models_dir / "offset_classifier_combined.joblib",
+            )
+            for label, model in combined_models_full["per_stretch_models"].items():
+                if model is not None:
+                    joblib.dump(
+                        model,
+                        models_dir / f"offset_classifier_{label}_gated.joblib",
+                    )
+
+        if combined_models_subset:
+            joblib.dump(
+                combined_models_subset["force_model"],
+                models_dir / "force_regressor_combined_subset.joblib",
+            )
+            joblib.dump(
+                combined_models_subset["stretch_model"],
+                models_dir / "stretch_classifier_combined_subset.joblib",
+            )
+            joblib.dump(
+                combined_models_subset["combined_offset_model"],
+                models_dir / "offset_classifier_combined_subset.joblib",
+            )
+            for label, model in combined_models_subset["per_stretch_models"].items():
+                if model is not None:
+                    joblib.dump(
+                        model,
+                        models_dir / f"offset_classifier_{label}_gated_subset.joblib",
+                    )
+
+        print(f"\nModels written to {models_dir}")
 
     # Save JSON report
     report_payload = {

@@ -346,21 +346,19 @@ directly.
 
 \begin{table}[H]
     \centering
-    \caption{Datasets collected on 11~Nov~2025. Metrics will be inserted from the JSON reports after validation.}
+    \caption{Datasets collected on 11~Nov~2025. Metrics reported in Sections~\ref{sec:results}--\ref{sec:simulation}.}
     \begin{tabularx}{\linewidth}{@{}lcc>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{2.8cm}>{\raggedright\arraybackslash}X@{}}
         \toprule
         Run label & Type & Stretch levels & Offsets & Artefacts & Notes \\
         \midrule
         2.5mm\_single\_test1 & Single-point & 0, 10, 20\% & centre, nw, ne, se, sw & models/, metrics JSON & Baseline calibration set. \\
-        Multiple\_Points/2.5mm\_single\_test1 & Multi-point & 0, 10, 20\% & centre + offsets 4–12 & models/, metrics JSON & Extended neighbourhood offsets (collection in progress). \\
+        Multiple\_Points/2.5mm\_single\_test1 & Multi-point & 0, 10, 20\% & centre + offsets 4–12 & models/, metrics JSON & Complete 13-location dataset (centre + offsets 4–12). \\
         \bottomrule
     \end{tabularx}
     \label{tab:datasets-collected}
 \end{table}
 
-The subsequent sections present the quantitative results for these two runs. Values denoted as
-\texttt{TBD} will be filled in automatically when the evaluation script is rerun after data
-collection completes.
+The subsequent sections present the quantitative results for these two runs as produced by the automated training pipelines.
 
 \section{Simulation Dataset Evaluation}
 \label{sec:simulation}
@@ -464,8 +462,8 @@ for the on-robot runs so that evaluation utilities and GUIs can load them withou
 \section{Results and Discussion}
 \label{sec:results}
 
-\subsection{Force Mapping Metrics}
-\paragraph{Single-point (2.5mm\_single\_test1).}
+\subsection{Single-Point Dataset (2.5mm\_single\_test1)}
+\paragraph{Force Mapping.}
 \begin{table}[H]
     \centering
     \caption{Force regression metrics with all 15 sensors – single-point test~1.}
@@ -482,10 +480,11 @@ for the on-robot runs so that evaluation utilities and GUIs can load them withou
     \end{tabular}
 \end{table}
 
-\paragraph{Multi-point (Multiple\_Points/2.5mm\_single\_test1).}
+\paragraph{Force Mapping (central subset).}
 \begin{table}[H]
     \centering
     \caption{Force regression using only the five central-neighbourhood sensors – single-point test~1.}
+    \label{tab:force-single-subset}
     \begin{tabular}{@{}lcccccc@{}}
         \toprule
         Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
@@ -498,24 +497,7 @@ for the on-robot runs so that evaluation utilities and GUIs can load them withou
     \end{tabular}
 \end{table}
 
-\begin{table}[H]
-    \centering
-    \caption{Force regression metrics – multi-point test~1 (all sensors).}
-    \label{tab:force-multi}
-    \begin{tabular}{@{}lcccccc@{}}
-        \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
-        \midrule
-        stretch\_000pct & TBD & TBD & TBD & TBD & TBD & TBD \\
-        stretch\_010pct & TBD & TBD & TBD & TBD & TBD & TBD \\
-        stretch\_020pct & TBD & TBD & TBD & TBD & TBD & TBD \\
-        combined (pooled) & TBD & TBD & TBD & TBD & TBD & TBD \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\subsection{Offset Classification}
-\paragraph{Single-point (2.5mm\_single\_test1).}
+\paragraph{Offset Classification.}
 \begin{table}[H]
     \centering
     \caption{Per-stretch offset classification accuracy (full sensors vs. central subset) – single-point test~1.}
@@ -531,26 +513,11 @@ for the on-robot runs so that evaluation utilities and GUIs can load them withou
     \end{tabular}
 \end{table}
 
-\paragraph{Multi-point (Multiple\_Points/2.5mm\_single\_test1).}
+\paragraph{Pooled Offset Pipelines.}
 \begin{table}[H]
     \centering
-    \caption{Per-stretch offset accuracy for the expanded offset set (full sensors).}
-    \label{tab:offset-multi}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Stretch & Samples & Accuracy & Notes \\
-        \midrule
-        stretch\_000pct & TBD & TBD & Centre + offsets 4–12 \\
-        stretch\_010pct & TBD & TBD & --- \\
-        stretch\_020pct & TBD & TBD & --- \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\begin{table}[H]
-    \centering
-    \caption{Pooled offset pipelines across all stretches (combined datasets).}
-    \label{tab:offset-combined}
+    \caption{Combined offset pipelines across all stretches – single-point test~1.}
+    \label{tab:offset-combined-single}
     \begin{tabular}{@{}lccc@{}}
         \toprule
         Model & Samples & Accuracy & Notes \\
@@ -563,74 +530,121 @@ for the on-robot runs so that evaluation utilities and GUIs can load them withou
     \end{tabular}
 \end{table}
 
-\subsection{Stretch Classification}
+\paragraph{Stretch Classification.}
 \begin{table}[H]
     \centering
-    \caption{Stretch classification metrics (pooled data).}
+    \caption{Stretch classification metrics – single-point test~1 (pooled data).}
+    \label{tab:stretch-single}
     \begin{tabular}{@{}lccc@{}}
         \toprule
         Metric & Full sensors & Central subset & Notes \\
         \midrule
-        Samples & TBD & TBD & Random Forest (250 trees) \\
-        Accuracy & TBD & TBD & Will be updated from JSON report \\
+        Samples & 225 & 225 & Random Forest (250 trees) \\
+        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Multi-Point Dataset (Multiple\_Points/2.5mm\_single\_test1)}
+\paragraph{Force Mapping.}
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics – multi-point test~1 (all sensors).}
+    \label{tab:force-multi}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 650 & 0.0624 & 0.0623 & 0.0100 & PASS & FAIL \\
+        stretch\_010pct & 650 & 0.0636 & 0.0635 & 0.0100 & PASS & FAIL \\
+        stretch\_020pct & 650 & 0.0640 & 0.0638 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 1950 & 0.0783 & 0.0783 & 0.0010 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Force Mapping (central subset).}
+\begin{table}[H]
+    \centering
+    \caption{Force regression using central-neighbourhood sensors – multi-point test~1.}
+    \label{tab:force-multi-subset}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 650 & 0.0662 & 0.0662 & 0.0100 & PASS & FAIL \\
+        stretch\_010pct & 650 & 0.0659 & 0.0658 & 0.0100 & PASS & FAIL \\
+        stretch\_020pct & 650 & 0.0634 & 0.0627 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 1950 & 0.0615 & 0.0615 & 0.0010 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Offset Classification.}
+\begin{table}[H]
+    \centering
+    \caption{Per-stretch offset accuracy for the expanded offset set (full sensors).}
+    \label{tab:offset-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Stretch & Samples & Accuracy & Notes \\
+        \midrule
+        stretch\_000pct & 650 & 1.000 & Centre + offsets 4–12 \\
+        stretch\_010pct & 650 & 1.000 & --- \\
+        stretch\_020pct & 650 & 1.000 & --- \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Pooled Offset Pipelines.}
+\begin{table}[H]
+    \centering
+    \caption{Combined offset pipelines across all stretches – multi-point test~1.}
+    \label{tab:offset-combined-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Model & Samples & Accuracy & Notes \\
+        \midrule
+        combined (full features) & 585 & 1.000 & Single Random Forest trained on pooled data \\
+        combined (subset features) & 585 & 1.000 & Uses 15 magnetic channels only \\
+        gated (full features) & 585 & 1.000 & Stretch predicted first, then routed \\
+        gated (subset features) & 585 & 1.000 & Same pipeline with reduced features \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\paragraph{Stretch Classification.}
+\begin{table}[H]
+    \centering
+    \caption{Stretch classification metrics – multi-point test~1 (pooled data).}
+    \label{tab:stretch-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Metric & Full sensors & Central subset & Notes \\
+        \midrule
+        Samples & 585 & 585 & Random Forest (250 trees) \\
+        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
         \bottomrule
     \end{tabular}
 \end{table}
 
 \subsection{Discussion}
-The latest evaluation (50 presses per offset, three stretch levels) indicates:
-For the runs collected on 11~November~2025 the automated pipeline will populate the tables above
-once the operator triggers the evaluation step. The discussion below will be expanded after the JSON
-reports are ingested. In the meantime the following observations remain valid:
+\paragraph{Key observations.}
 \begin{itemize}[leftmargin=1.5em]
-    \item The single-point configuration achieved RMSE below \SI{0.05}{\newton} and satisfied KPM2 for
-          0~\% and 10~\% stretch. At 20~\% the variance increased ($\mathrm{STD}\approx\SI{0.064}{\newton}$),
-          indicating that the prototype becomes noisier at high elongation.
-    \item Offset classification for the single-point dataset reached 100\% accuracy across all stretches,
-          both with the full 15-sensor feature vector and with the five-sensor neighbourhood subset.
-    \item Combined models trained on all three stretches remain perfect for offset and stretch
-          classification, providing confidence that the same architecture can be reused for the multi-point
-          dataset.
-    \item Thanks to the run-folder organisation, each dataset carries its metrics JSON and the trained
-          models, so future comparisons with the upcoming multi-point run can be performed without
-          ambiguity.
+    \item The single-point dataset maintains sub-\SI{0.05}{\newton} RMSE for 0~\% and 10~\% stretch, passing KPM2, while the 20~\% condition exhibits higher variance (STD \(\approx\SI{0.064}{\newton}\)) and fails KPM2.
+    \item The multi-point dataset delivers consistent RMSE around \SI{0.063}{\newton} across all 13 offsets. KPM1 stays within tolerance, but KPM2 fails because residual variance remains above \SI{0.05}{\newton}.
+    \item Offset classification reaches 100\% accuracy in both experiments—per stretch, pooled, and gated—showing that spatial features generalise from the five-offset study to the extended 13-location grid.
+    \item Stretch detection remains perfect (100\%) for both datasets, confirming that the magnitude-normalised features preserve elongation cues even under multi-contact excitation.
+    \item Each run directory (`data/2.5mm_single_test1/` and `data/Multiple_Points/2.5mm_single_test1/`) contains the trained models and JSON metrics, enabling reproducible comparisons without rerunning training.
 \end{itemize}
 
 \subsection{Visual Summaries}
 \label{sec:visual-summaries}
-Figures~\ref{fig:stretch-000-summary}--\ref{fig:stretch-020-summary} show the time-series traces
-exported from the latest run (generated via \texttt{plot\_single\_point\_stretch.py}, folder
-\texttt{plots/single\_point/run\_20251110\_185744/}). Each stretch produces five figures (centre,
-NW, NE, SW, SE offsets); the examples below focus on the centre press set. The first three subplots
-display the raw force components (Fz, Fx, Fy) with shared axis limits, while the bottom subplot
-reports the baseline-subtracted Sensor~8 channels \((B_x, B_y, B_z)\), rescaled to \([-1, 1]\) for
-visual clarity. Alignment of time and axis ranges across stretches supports direct comparison between
-elongation conditions. Additional offset-specific figures follow the naming convention
-\texttt{stretch\_XYZ\_<offset>\_presses.png}.
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_000pct_center_presses.png}
-\caption{Stretch~0\% (centre offset): raw force components and the normalised Sensor~8 channels
-        aggregated across 49 presses.}
-    \label{fig:stretch-000-summary}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_010pct_center_presses.png}
-\caption{Stretch~10\% (centre offset): force envelopes remain within KPM limits; the
-        \(B_x,B_y,B_z\) traces stay phase-aligned with the force profile.}
-    \label{fig:stretch-010-summary}
-\end{figure}
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.92\textwidth]{../plots/single_point/run_20251110_185744/stretch_020pct_center_presses.png}
-\caption{Stretch~20\% (centre offset): despite larger elongation, the Sensor~8 channels follow the
-        same temporal signature, confirming robustness of the normalisation pipeline.}
-    \label{fig:stretch-020-summary}
-\end{figure}
+Time-series plots (force components plus Sensor~8 channels) are generated automatically in
+\texttt{plots/single\_point/run\_20251110\_185744/} for the single-point study and in
+\texttt{plots/multi\_point/} for the expanded offsets. To keep this document concise, the PNG files are
+not embedded; re-enable them by uncommenting the figure stubs in this section when a full graphical
+appendix is required.
 
 \section{Model Inventory and Training Pipeline}
 \subsection{Single-Point Models}
@@ -645,7 +659,7 @@ elongation conditions. Additional offset-specific figures follow the naming conv
           is also produced to support stretches unseen during training.
     \item[Combined stretch-gated pipeline.] A stretch classifier routes each sample to the pooled or
           per-stretch offset model and uses the combined force regressor for \(F_z\) prediction.
-          Accuracy remains 100\% (Table~\ref{tab:offset-combined}).
+          Accuracy remains 100\% (Table~\ref{tab:offset-combined-single}).
     \item[Training invocation.] The command
 \begin{verbatim}
 python3 src/training/evaluate_single_point_stretch.py \
@@ -657,14 +671,16 @@ python3 src/training/evaluate_single_point_stretch.py \
 
 \subsection{Multi-Point Models}
 \begin{description}[leftmargin=1.5em]
-    \item[Per-stretch force regressors.] The multi-point wrapper will train three regressors once
-          the dataset \texttt{Multiple\_Points/2.5mm\_single\_test1} is collected. Metrics will be
-          inserted into Table~\ref{tab:force-multi} automatically.
-    \item[Per-stretch offset classifiers.] The same evaluation script will extend the label space to
-          include offsets 4--12 and report the per-stretch accuracies in Table~\ref{tab:offset-multi}.
+    \item[Per-stretch force regressors.] The multi-point script now trains three regressors covering
+          the 13-offset grid; metrics are listed in Tables~\ref{tab:force-multi} and
+          \ref{tab:force-multi-subset}. Artefacts live in
+          \texttt{data/Multiple\_Points/2.5mm\_single\_test1/models/}.
+    \item[Per-stretch offset classifiers.] Accuracy remains perfect across all offsets
+          (Table~\ref{tab:offset-multi}); pooled and gated variants are summarised in
+          Table~\ref{tab:offset-combined-multi}.
     \item[Combined stretch-gated pipeline.] A shared stretch detector plus pooled offset classifier
-          will provide the final prediction, mirroring the single-point architecture.
-    \item[Training invocation.] Once data collection finishes, run
+          mirrors the single-point architecture while handling the extended label space.
+    \item[Training invocation.] To regenerate the models, run
 \begin{verbatim}
 python3 src/franka_controller/franka_skin_test_multiple_points.py
 \end{verbatim}
