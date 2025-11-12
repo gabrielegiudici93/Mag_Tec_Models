@@ -170,3 +170,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
++import shutil
++
+ if __name__ == "__main__":
+     main()
