@@ -1,0 +1,6 @@
+{
+  "ground_truth_resolution": 0.009999999999999787,
+  "predicted_resolution": 0.0009999999999998899,
+  "ground_truth_kpm1_pass": true,
+  "predicted_kpm1_pass": true
+}
