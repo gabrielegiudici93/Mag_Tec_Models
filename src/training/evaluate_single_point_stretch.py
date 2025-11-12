@@ -63,8 +63,10 @@ ACCURACY_RMSE_THRESHOLD = 0.10  # High accuracy → RMSE < 0.1 N
 PRECISION_STD_THRESHOLD = 0.05  # High precision → std dev < 0.05 N
 SENSITIVITY_TARGET = 0.05       # Desired force resolution (N)
 
-# Central neighbourhood sensor indices (0-based: corresponds to sensors 2,4,8,12,14 in 1-based)
-CENTRAL_SENSOR_INDICES = [1, 3, 7, 11, 13]
+# Central neighbourhood sensor indices (0-based: corresponds to sensors 7,8,9 in 1-based)
+# These are the sensors directly adjacent to the center (sensor 8): top (7), center (8), bottom (9)
+# If more sensors needed, can expand to [4, 6, 7, 8, 9, 10] for 5,7,8,9,11 (right, top, center, bottom, left)
+CENTRAL_SENSOR_INDICES = [6, 7, 8]  # Sensors 7, 8, 9 (1-based): top, center, bottom
 
 # ---------------------------------------------------------------------------
 # Data loading utilities
