@@ -79,14 +79,17 @@ calculations. A templated results section is fed directly with the metrics produ
 \begin{table}[H]
     \centering
     \renewcommand{\arraystretch}{1.2}
-    \caption{Robotiq FT-300S specifications relevant to sub-1~N force measurements.}
+    \caption{Robotiq FT-300S specifications and limitations for low-force measurements.}
     \begin{tabular}{@{}p{4.8cm}p{9.2cm}@{}}
         \toprule
         Quantity & Value / Notes \\
         \midrule
         Force range & \(\pm \SI{300}{\newton}\) along each axis. \\[0.4em]
-        Resolution & \(\SI{0.1}{\newton}\) (datasheet); verified to be repeatable within \(\pm\SI{0.05}{\newton}\) after offset removal, ensuring accuracy below \SI{1}{\newton}. \\[0.4em]
-        Accuracy / linearity & \(\pm 1\%\) of full scale (\(\pm \SI{3}{\newton}\)); in the 0--\SI{1}{\newton} regime, post-calibration bias stays within \(\pm \SI{0.08}{\newton}\). \\[0.4em]
+        Standard deviation & \(\SI{0.1}{\newton}\) for \(F_z\) over a one-second period (manufacturer specification). \\[0.4em]
+        Recommended range & Manufacturer recommends relative force measurements starting from \SI{1}{\newton} upwards. Measurements below \SI{1}{\newton} are not considered reliable for precise results due to the \SI{0.1}{\newton} standard deviation. \\[0.4em]
+        Accuracy / linearity & \(\pm 1\%\) of full scale (\(\pm \SI{3}{\newton}\)). \\[0.4em]
+        Sensor offsets & Offset can reach up to \SI{3}{\newton} after strong force is applied and then removed, affected by time and environmental conditions. \\[0.4em]
+        Measurement type & Designed for relative force and torque measurements over short periods with similar orientations, not for highly accurate absolute values, especially at low forces. \\[0.4em]
         Sampling rate & \SI{100}{\hertz} logging during experiments. \\[0.4em]
         Mounting & Rigidly attached between the Franka flange and the indenter; offset calibration repeated before every acquisition. \\
         \bottomrule
@@ -94,39 +97,36 @@ calculations. A templated results section is fed directly with the metrics produ
     \label{tab:ft-specs}
 \end{table}
 
-In practice the combination of offset calibration and ambient drift monitoring keeps the residual
-force bias below \(\pm\SI{0.08}{\newton}\), confirming that the FT sensor remains trustworthy for
-the 0--\SI{1}{\newton} range required by the KPM sensitivity target.
+The manufacturer's specifications indicate that the FT-300S is not reliable for precise measurements below \SI{1}{\newton}. The standard deviation of \SI{0.1}{\newton} over one second makes any measurement below this threshold unreliable for precise results. While offset calibration is performed before each acquisition, the sensor's design prioritizes relative measurements over absolute accuracy at low forces. This limitation should be considered when interpreting force regression results, particularly for the KPM sensitivity target of \SI{0.05}{\newton}.
 
 \subsection{Software Modules}
 \begin{table}[H]
     \centering
     \renewcommand{\arraystretch}{1.2}
     \caption{Code hierarchy relevant to the validation pipeline.}
-    \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash\ttfamily\footnotesize}p{5.4cm}>{\raggedright\arraybackslash}X@{}}
+    \begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash\ttfamily\footnotesize}p{7cm}X@{}}
         \toprule
         Module & Role \\
         \midrule
-        src/franka\_controller/franka\_skin\_test.py &
+        src/franka\_controller/\newline franka\_skin\_test.py &
         Core data-collection engine: sensor threads, calibration, robot motion, logging. \\
-        src/franka\_controller/franka\_skin\_test\_single\_point.py &
+        src/franka\_controller/\newline franka\_skin\_test\_single\_point.py &
         Single-point wrapper (configures offsets, prompts operator, launches GUI, triggers training). \\
-        src/franka\_controller/franka\_skin\_test\_multiple\_points.py &
+        src/franka\_controller/\newline franka\_skin\_test\_multiple\_points.py &
         Multi-point wrapper (exploration mode, extended offsets, identical training pipeline). \\
-        src/franka\_controller/teleop\_franka\_keyboard.py &
-        Keyboard teleoperation with live visualisation for quick sanity checks. \\
-        src/validation\_tests/real\_time\_predictor.py &
+        src/franka\_controller/\newline teleop\_franka\_keyboard.py &
+        Keyboard teleoperation with live visualisation for quick checks. \\
+        src/validation\_tests/\newline real\_time\_predictor.py &
         Predictor GUI reused for live plotting (FT traces and magnet intensities). \\
-        src/training/evaluate\_single\_point\_stretch.py &
+        src/training/\newline evaluate\_single\_point\_stretch.py &
         Offline analysis: loads press summaries, computes metrics, serialises JSON reports. \\
         \bottomrule
     \end{tabularx}
 \end{table}
-
 \section{Data Acquisition Protocol}
 
 \subsection{Press Grid}
-The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 32}) together with four
+The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 8}) together with four
 neighbour offsets \(\{\text{NW}, \text{NE}, \text{SE}, \text{SW}\}\), plus the centre. Baseline offsets
 are defined by the constants
 \[
@@ -168,7 +168,7 @@ Operators are prompted before each stretch run to re-adjust the skin tension. Ma
 confirmation is required to proceed.
 
 \subsection{Run Organisation}
-Each acquisition session is stored in its own run directory. The scripts now auto-generate
+Each acquisition session is stored in its own run directory. The scripts generate
 human-readable labels so repeated experiments stay organised:
 \[
 \texttt{data/}\begin{cases}
@@ -177,7 +177,7 @@ human-readable labels so repeated experiments stay organised:
 \end{cases}
 \]
 Within each run directory the three stretch recordings are saved as individual HDF5 files
-(\texttt{\ldots\_stretch\_000pct.h5}, \texttt{\ldots\_stretch\_010pct.h5}, \texttt{\ldots\_stretch\_020pct.h5})
+(\texttt{\_stretch\_000pct.h5}, \texttt{\_stretch\_010pct.h5}, \texttt{\_stretch\_020pct.h5})
 alongside a `models/` subfolder and a JSON report created by the training pipeline. This layout
 allows multiple datasets to coexist while keeping the associated models and metrics bundled with
 their raw data.
@@ -220,11 +220,13 @@ after a stabilisation dwell.
 
 \subsection{Central-Neighbourhood Ablation}
 To assess potential overfitting when only the central neighbourhood is stimulated, an additional
-feature vector \(\mathbf{s}_{\text{local}}\) is extracted by keeping the five sensors surrounding the
-target indentation (IDs \(\{2,4,8,12,14\}\), i.e. NW, NE, SW, SE, and the centre). The resulting
-vector has \(5 \times 3 = 15\) magnetic channels and is processed by an independent set of
-regressors and classifiers. Comparing the full and local results highlights whether the remaining
-ten sensors contribute meaningful information or simply allow trivial memorisation.
+feature vector \(\mathbf{s}_{\text{local}}\) is extracted by keeping the three sensors directly
+adjacent to the center indentation point. The center sensor is sensor~8, and the ablation study
+uses sensors \(\{7, 8, 9\}\), corresponding to the top, center, and bottom sensors in the vertical
+column. The resulting vector has \(3 \times 3 = 9\) magnetic channels (Bx, By, Bz for each sensor)
+and is processed by an independent set of regressors and classifiers. Comparing the full (15 sensors,
+45 features) and local (3 sensors, 9 features) results highlights whether the remaining twelve
+sensors contribute meaningful information or simply allow trivial memorisation.
 
 \subsection{Signal Conditioning}
 No digital filtering is applied during training or visualisation. The FT force samples and the
@@ -246,7 +248,9 @@ For each stretch level, an independent Random Forest regressor approximates the 
 to the per-stretch models, we train a \emph{combined} regressor on the pooled dataset; this provides
 a single model capable of handling data from any elongation while still reporting the aggregated
 KPMs.
-\paragraph{Metrics.} The error vector is \(e_i = F_{z,i} - \hat{F}_{z,i}\). We report:
+
+\subsubsection{Metrics}
+The error vector is \(e_i = F_{z,i} - \hat{F}_{z,i}\). We report:
 \begin{align}
     \text{RMSE}_s &= \sqrt{\frac{1}{N} \sum_{i=1}^{N} e_i^2}, \\
     \sigma_s &= \sqrt{\frac{1}{N-1} \sum_{i=1}^{N} (e_i - \bar{e})^2},
@@ -255,17 +259,84 @@ which correspond to accuracy and precision for KPM~2. A data-driven estimate of 
 resolution (KPM~1) is computed as the minimum positive difference between unique force
 samples.
 
-\subsection{Offset and Stretch Classification}
-For each stretch we train a dedicated offset classifier \(\hat{o}_s(\mathbf{s})\) using only the tactile
-digits. We also train a single stretch classifier \(\hat{l}(\mathbf{s})\) on the pooled dataset, and a
-global offset classifier \(\hat{o}_{\text{comb}}(\mathbf{s})\) that ignores the stretch label. The
-deployed pipeline first predicts the stretch, then routes the sample to the corresponding offset
-model:
+\subsection{Press Location and Stretch Classification}
+\label{sec:classification-models}
+
+The classification pipeline consists of three components: per-stretch press location classifiers,
+a global stretch classifier, and a gated pipeline that combines both.
+
+\subsubsection{Per-Stretch Press Location Classification}
+For each stretch level \(s \in \mathcal{S}\), we train a dedicated Random Forest classifier
+\(\hat{p}_s(\mathbf{s})\) that maps the tactile feature vector \(\mathbf{s} \in \mathbb{R}^{45}\) (or
+\(\mathbb{R}^{9}\) for the ablation study) to a press location label. The classifier learns the
+mapping:
 \[
-    \hat{o} = \hat{o}_{\hat{l}(\mathbf{s})}(\mathbf{s}).
+    \hat{p}_s: \mathbf{s} \mapsto \{c_1, c_2, \ldots, c_{n_s}\},
 \]
-If the predicted stretch has insufficient training data, the pipeline falls back to the combined
-offset classifier.
+where \(c_i\) are the press location classes available for stretch \(s\) (e.g., for the single-point
+dataset: \(\{\text{center}, \text{nw}, \text{ne}, \text{se}, \text{sw}\}\), and for the multi-point dataset:
+\(\{\text{center}, \text{nw}, \text{ne}, \text{se}, \text{sw}, 4, 5, 6, 7, 9, 10, 11, 12\}\)).
+
+The classifier is trained on a subset \(\mathcal{D}_s = \{(\mathbf{s}_i, p_i)\}_{i=1}^{N_s}\) where \(p_i\)
+is the true press location label and all samples belong to stretch \(s\). The training objective
+maximises the probability of correct classification:
+\[
+    \hat{p}_s = \arg\max_{\theta} \sum_{i=1}^{N_s} \log P(p_i | \mathbf{s}_i; \theta),
+\]
+where \(\theta\) are the Random Forest hyperparameters (see Table~\ref{tab:rf-params}).
+
+\subsubsection{Stretch Classification}
+A single Random Forest classifier \(\hat{l}(\mathbf{s})\) is trained on the pooled dataset
+\(\mathcal{D}_{\text{pooled}} = \bigcup_{s \in \mathcal{S}} \mathcal{D}_s\) to predict the stretch level
+from the tactile features:
+\[
+    \hat{l}: \mathbf{s} \mapsto \{s_1, s_2, s_3\} = \{0\%, 10\%, 20\%\}.
+\]
+The classifier learns to distinguish between stretch levels based on the magnetic field patterns,
+which change as the skin geometry elongates. The training objective is:
+\[
+    \hat{l} = \arg\max_{\theta} \sum_{(\mathbf{s}_i, l_i) \in \mathcal{D}_{\text{pooled}}} \log P(l_i | \mathbf{s}_i; \theta),
+\]
+where \(l_i\) is the true stretch label for sample \(i\).
+
+\subsubsection{Combined Press Location Classifier}
+A global press location classifier \(\hat{p}_{\text{comb}}(\mathbf{s})\) is trained on the pooled dataset,
+ignoring the stretch label. This model learns location patterns that are invariant to skin elongation:
+\[
+    \hat{p}_{\text{comb}}: \mathbf{s} \mapsto \{c_1, c_2, \ldots, c_n\},
+\]
+where the class set includes all press locations seen across all stretch levels. The training
+objective is:
+\[
+    \hat{p}_{\text{comb}} = \arg\max_{\theta} \sum_{(\mathbf{s}_i, p_i) \in \mathcal{D}_{\text{pooled}}} \log P(p_i | \mathbf{s}_i; \theta).
+\]
+
+\subsubsection{Gated Pipeline}
+The deployed pipeline uses a two-stage approach: first predict the stretch level, then route the
+sample to the corresponding per-stretch press location classifier. If the predicted stretch has
+insufficient training data or the per-stretch model is unavailable, the pipeline falls back to the
+combined classifier:
+\[
+    \hat{p} = \begin{cases}
+        \hat{p}_{\hat{l}(\mathbf{s})}(\mathbf{s}) & \text{if } \hat{p}_{\hat{l}(\mathbf{s})} \text{ exists and is trained}, \\
+        \hat{p}_{\text{comb}}(\mathbf{s}) & \text{otherwise}.
+    \end{cases}
+\]
+
+\subsubsection{Classification Metrics}
+For each classifier, we report the accuracy on the test set:
+\[
+    \text{Accuracy} = \frac{1}{N_{\text{test}}} \sum_{i=1}^{N_{\text{test}}} \mathbb{1}[\hat{y}_i = y_i],
+\]
+where \(\hat{y}_i\) is the predicted class, \(y_i\) is the true class, and \(\mathbb{1}[\cdot]\) is the
+indicator function. We also compute the per-class precision, recall, and F1-score:
+\begin{align}
+    \text{Precision}_c &= \frac{\text{TP}_c}{\text{TP}_c + \text{FP}_c}, \\
+    \text{Recall}_c &= \frac{\text{TP}_c}{\text{TP}_c + \text{FN}_c}, \\
+    \text{F1}_c &= \frac{2 \cdot \text{Precision}_c \cdot \text{Recall}_c}{\text{Precision}_c + \text{Recall}_c},
+\end{align}
+where \(\text{TP}_c\), \(\text{FP}_c\), and \(\text{FN}_c\) are the true positives, false positives, and
+false negatives for class \(c\), respectively.
 
 \section{Key Performance Metrics}
 
@@ -334,6 +405,8 @@ A typical JSON payload has the form:
   "kpm_thresholds": {...}
 }
 \end{verbatim}
+Note: The JSON keys use ``offset\_classification'' for historical reasons, but these fields contain
+metrics for \emph{press location classification} (see Section~\ref{sec:classification-models}).
 Values in Section~\ref{sec:results} are populated directly from these fields.
 
 \section{Dataset Summary}
@@ -346,7 +419,7 @@ directly.
 
 \begin{table}[H]
     \centering
-    \caption{Datasets collected on 11~Nov~2025. Metrics reported in Sections~\ref{sec:results}--\ref{sec:simulation}.}
+    \caption{Datasets collected on 11~Nov~2025. Metrics reported in Section~\ref{sec:results} and Appendix~\ref{sec:simulation}.}
     \begin{tabularx}{\linewidth}{@{}lcc>{\raggedright\arraybackslash}p{3.5cm}>{\raggedright\arraybackslash}p{2.8cm}>{\raggedright\arraybackslash}X@{}}
         \toprule
         Run label & Type & Stretch levels & Offsets & Artefacts & Notes \\
@@ -359,6 +432,377 @@ directly.
 \end{table}
 
 The subsequent sections present the quantitative results for these two runs as produced by the automated training pipelines.
+
+\section{Results and Discussion}
+\label{sec:results}
+
+\subsection{Single-Point Dataset (2.5mm\_single\_test1)}
+\subsubsection{Force Mapping}
+This table reports force mapping performance using all 15 sensors for the single-point dataset.
+The metrics are computed on the test set after a 70/30 train/test split (75 samples per stretch,
+225 total for the combined model). RMSE quantifies prediction accuracy, while STD measures precision.
+The 0\% and 10\% stretch conditions pass both KPMs (KPM2 requires STD $\leq 0.05$~N), but the 20\%
+condition fails KPM2 due to higher variance (STD $\approx 0.064$~N), likely caused by increased skin
+deformation at higher elongation.
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics with all 15 sensors – single-point test~1.}
+    \label{tab:force-single}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 75 & 0.0459 & 0.0458 & 0.0100 & PASS & PASS \\
+        stretch\_010pct & 75 & 0.0489 & 0.0476 & 0.0100 & PASS & PASS \\
+        stretch\_020pct & 75 & 0.0646 & 0.0637 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 225 & 0.0512 & 0.0511 & 0.0040 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split (75 samples per stretch, 225 total for combined).}
+\end{table}
+
+\subsubsection{Force Mapping (central subset)}
+This table presents the same force mapping evaluation as Table~\ref{tab:force-single}, but using
+only the three central sensors (7, 8, 9) as part of an ablation study. The sample counts are
+identical (75 per stretch, 225 total for combined). Performance is slightly degraded compared to the full
+sensor array, but remains acceptable, demonstrating that the central sensors capture most of the
+relevant force information. This suggests that a reduced sensor configuration could be viable for
+applications where computational efficiency or hardware constraints are priorities.
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression using only the three central sensors (7, 8, 9) – single-point test~1.}
+    \label{tab:force-single-subset}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 75 & 0.0486 & 0.0485 & 0.0100 & PASS & PASS \\
+        stretch\_010pct & 75 & 0.0496 & 0.0484 & 0.0100 & PASS & PASS \\
+        stretch\_020pct & 75 & 0.0578 & 0.0574 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 225 & 0.0527 & 0.0524 & 0.0040 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split (75 samples per stretch, 225 total for combined).}
+\end{table}
+
+\subsubsection{Press Location Classification}
+This table shows the accuracy of classifying which of the five press locations (center, nw, ne, se, sw)
+was pressed, evaluated separately for each stretch level. The metrics are computed on the test set
+after a 70/30 train/test split (75 samples per stretch). Both the full sensor array (15 sensors) and the central subset
+(sensors 7, 8, 9) achieve perfect 100\% accuracy across all stretches, demonstrating that spatial
+features are highly discriminative and that the central sensors alone are sufficient for location
+classification in this single-point scenario.
+
+\begin{table}[H]
+    \centering
+    \caption{Per-stretch press location classification accuracy (full sensors vs. central subset) – single-point test~1.}
+    \label{tab:offset-single}
+    \begin{tabular}{@{}lcccc@{}}
+        \toprule
+        Stretch & Samples & Accuracy (full) & Accuracy (subset) & Notes \\
+        \midrule
+        stretch\_000pct & 75 & 1.000 & 1.000 & Five press locations around the centre \\
+        stretch\_010pct & 75 & 1.000 & 1.000 & --- \\
+        stretch\_020pct & 75 & 1.000 & 1.000 & --- \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split (75 samples per stretch).}
+\end{table}
+
+\subsubsection{Pooled Press Location Pipelines}
+This table evaluates different classification strategies that combine data across all stretches. The
+sample count (225) represents the test set size after a 70/30 train/test split on the pooled
+dataset (30\% of 750 total samples). Four pipeline variants are compared: (1) \emph{combined (full
+features)}: a single classifier trained on all stretches pooled together; (2) \emph{combined
+(subset features)}: same approach using only 15 features (3 sensors $\times$ 3 axes); (3)
+\emph{gated (full features)}: a two-stage pipeline that first predicts stretch, then routes to the
+corresponding per-stretch classifier; (4) \emph{gated (subset features)}: same gated pipeline with
+reduced features. All variants achieve perfect 100\% accuracy, demonstrating that the models
+generalize effectively across different stretch levels and that the gated approach provides
+robustness without sacrificing performance.
+
+\begin{table}[H]
+    \centering
+    \caption{Combined press location pipelines across all stretches – single-point test~1.}
+    \label{tab:offset-combined-single}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Model & Samples & Accuracy & Notes \\
+        \midrule
+        combined (full features) & 225 & 1.000 & Single Random Forest trained on pooled data \\
+        combined (subset features) & 225 & 1.000 & Uses 15 magnetic channels only \\
+        gated (full features) & 225 & 1.000 & Stretch predicted first, then routed \\
+        gated (subset features) & 225 & 1.000 & Same pipeline with reduced features \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample count (225) represents the test set size after a 70/30 train/test split on the pooled dataset (30\% of 750 total samples).}
+\end{table}
+
+\subsubsection{Stretch Classification}
+This table reports the accuracy of predicting the stretch level (0\%, 10\%, or 20\%) from tactile
+features. The evaluation is performed on the pooled dataset using a 70/30 train/test split,
+resulting in 225 test samples (30\% of 750 total). Both the full sensor array (15 sensors) and the
+central subset (sensors 7, 8, 9) achieve perfect 100\% accuracy, demonstrating that stretch can be
+reliably detected from magnetic field patterns even with a reduced sensor configuration. This
+confirms that the skin's elongation state produces distinct and consistent signatures in the
+magnetic field measurements.
+
+\begin{table}[H]
+    \centering
+    \caption{Stretch classification metrics – single-point test~1 (pooled data).}
+    \label{tab:stretch-single}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Metric & Full sensors & Central subset & Notes \\
+        \midrule
+        Samples & 225 & 225 & Random Forest (250 trees) \\
+        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample count (225) represents the test set size after a 70/30 train/test split on the pooled dataset (30\% of 750 total samples).}
+\end{table}
+
+\subsection{Multi-Point Dataset (Multiple\_Points/2.5mm\_single\_test1)}
+\subsubsection{Force Mapping}
+This table reports force mapping performance for the multi-point dataset, which includes 13 press
+locations (center + locations 4--12) instead of the 5 locations in the single-point dataset. The
+metrics are computed on the test set after a 70/30 train/test split (195 samples per stretch, 585 total for the combined
+model). RMSE values are around 0.062--0.064~N per stretch, slightly higher than the single-point
+results. All stretch conditions fail KPM2 (STD $> 0.05$~N), likely due to increased spatial
+variation across the expanded contact grid. The combined model shows higher RMSE (0.078~N) due to
+the increased diversity of contact patterns.
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression metrics – multi-point test~1 (all sensors).}
+    \label{tab:force-multi}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 195 & 0.0624 & 0.0623 & 0.0100 & PASS & FAIL \\
+        stretch\_010pct & 195 & 0.0636 & 0.0635 & 0.0100 & PASS & FAIL \\
+        stretch\_020pct & 195 & 0.0640 & 0.0638 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 585 & 0.0783 & 0.0783 & 0.0010 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split (195 samples per stretch, 585 total for combined).}
+\end{table}
+
+\subsubsection{Force Mapping (central subset)}
+This table presents the same force mapping evaluation as Table~\ref{tab:force-multi}, but using
+only the three central sensors (7, 8, 9) as part of the ablation study. The sample counts are
+identical (195 per stretch, 585 total for combined). Performance is similar to the full sensor array,
+confirming that the central sensors capture sufficient information even with the expanded 13-location
+grid. This demonstrates the robustness of the central sensor configuration across different
+spatial contact patterns.
+
+\begin{table}[H]
+    \centering
+    \caption{Force regression using only the three central sensors (7, 8, 9) – multi-point test~1.}
+    \label{tab:force-multi-subset}
+    \begin{tabular}{@{}lcccccc@{}}
+        \toprule
+        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        \midrule
+        stretch\_000pct & 195 & 0.0633 & 0.0630 & 0.0100 & PASS & FAIL \\
+        stretch\_010pct & 195 & 0.0677 & 0.0676 & 0.0100 & PASS & FAIL \\
+        stretch\_020pct & 195 & 0.0594 & 0.0594 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 585 & 0.0619 & 0.0619 & 0.0010 & PASS & FAIL \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split (195 samples per stretch, 585 total for combined).}
+\end{table}
+
+\subsubsection{Press Location Classification}
+This table shows the accuracy of classifying which of the 13 press locations (center + locations
+4--12) was pressed, evaluated separately for each stretch level. The metrics are computed on the
+full dataset (650 samples per stretch). The classifier achieves perfect 100\% accuracy across all
+stretches, demonstrating that the models can reliably distinguish all 13 locations even with the
+expanded contact grid. This confirms that spatial features generalize effectively from the
+five-location study to the extended 13-location configuration.
+
+\begin{table}[H]
+    \centering
+    \caption{Per-stretch press location accuracy for the expanded location set (full sensors).}
+    \label{tab:offset-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Stretch & Samples & Accuracy & Notes \\
+        \midrule
+        stretch\_000pct & 650 & 1.000 & Centre + locations 4–12 \\
+        stretch\_010pct & 650 & 1.000 & --- \\
+        stretch\_020pct & 650 & 1.000 & --- \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample counts represent the full dataset per stretch (650 samples).}
+\end{table}
+
+\subsubsection{Pooled Press Location Pipelines}
+This table evaluates different classification strategies that combine data across all stretches for
+the multi-point dataset. The sample count (585) represents the test set size after a 70/30
+train/test split on the pooled dataset (30\% of 1950 total samples). Four pipeline variants are
+compared, identical in structure to those in Table~\ref{tab:offset-combined-single}: (1)
+\emph{combined (full features)}: a single classifier trained on all stretches pooled together;
+(2) \emph{combined (subset features)}: same approach using only 15 features; (3) \emph{gated (full
+features)}: two-stage pipeline with stretch prediction and routing; (4) \emph{gated (subset
+features)}: same gated pipeline with reduced features. All variants achieve perfect 100\% accuracy,
+confirming that the models generalize effectively across stretches even with the expanded 13-location
+grid.
+
+\begin{table}[H]
+    \centering
+    \caption{Combined press location pipelines across all stretches – multi-point test~1.}
+    \label{tab:offset-combined-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Model & Samples & Accuracy & Notes \\
+        \midrule
+        combined (full features) & 585 & 1.000 & Single Random Forest trained on pooled data \\
+        combined (subset features) & 585 & 1.000 & Uses 15 magnetic channels only \\
+        gated (full features) & 585 & 1.000 & Stretch predicted first, then routed \\
+        gated (subset features) & 585 & 1.000 & Same pipeline with reduced features \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample count (585) represents the test set size after a 70/30 train/test split on the pooled dataset (30\% of 1950 total samples).}
+\end{table}
+
+\subsubsection{Stretch Classification}
+This table reports the accuracy of predicting the stretch level (0\%, 10\%, or 20\%) from tactile
+features for the multi-point dataset. The evaluation is performed on the pooled dataset using a
+70/30 train/test split, resulting in 585 test samples (30\% of 1950 total). Both the full sensor
+array (15 sensors) and the central subset (sensors 7, 8, 9) achieve perfect 100\% accuracy,
+confirming that stretch detection works reliably even with multiple contact locations. This
+demonstrates that the magnitude-normalised features preserve elongation cues even under
+multi-contact excitation, and that the central sensors alone are sufficient for stretch
+classification.
+
+\begin{table}[H]
+    \centering
+    \caption{Stretch classification metrics – multi-point test~1 (pooled data).}
+    \label{tab:stretch-multi}
+    \begin{tabular}{@{}lccc@{}}
+        \toprule
+        Metric & Full sensors & Central subset & Notes \\
+        \midrule
+        Samples & 585 & 585 & Random Forest (250 trees) \\
+        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.1cm}
+    \footnotesize
+    \textit{Note: Sample count (585) represents the test set size after a 70/30 train/test split on the pooled dataset (30\% of 1950 total samples).}
+\end{table}
+
+\subsection{Discussion}
+\subsubsection{Key observations}
+\begin{itemize}[leftmargin=1.5em]
+    \item The single-point dataset maintains sub-\SI{0.05}{\newton} RMSE for 0~\% and 10~\% stretch, passing KPM2, while the 20~\% condition exhibits higher variance (STD \(\approx\SI{0.064}{\newton}\)) and fails KPM2.
+    \item The multi-point dataset delivers consistent RMSE around \SI{0.063}{\newton} across all 13 press locations. KPM1 stays within tolerance, but KPM2 fails because residual variance remains above \SI{0.05}{\newton}.
+    \item Press location classification reaches 100\% accuracy in both experiments—per stretch, pooled, and gated—showing that spatial features generalise from the five-location study to the extended 13-location grid.
+    \item Stretch detection remains perfect (100\%) for both datasets, confirming that the magnitude-normalised features preserve elongation cues even under multi-contact excitation.
+    \item Each run directory (`data/2.5mm_single_test1/` and `data/Multiple_Points/2.5mm_single_test1/`) contains the trained models and JSON metrics, enabling reproducible comparisons without rerunning training.
+\end{itemize}
+
+\subsection{Visual Summaries}
+\label{sec:visual-summaries}
+Time-series plots (force components plus Sensor~8 channels) are generated automatically in
+\texttt{plots/single\_point/run\_20251110\_185744/} for the single-point study and in
+\texttt{plots/multi\_point/} for the expanded offsets. To keep this document concise, the PNG files are
+not embedded; re-enable them by uncommenting the figure stubs in this section when a full graphical
+appendix is required.
+
+\section{Model Inventory and Training Pipeline}
+\subsection{Single-Point Models}
+\begin{description}[leftmargin=1.5em]
+    \item[Per-stretch force regressors.] Three Random Forest regressors (0, 10, 20\%) learn the mapping
+          from the 45 magnetic features to \(F_z\). Their metrics are reported in
+          Table~\ref{tab:force-single}. The artefacts are stored in
+          \texttt{data/2.5mm\_single\_test1/models/} alongside the JSON report
+          (\texttt{2.5mm\_single\_test1\_metrics.json}).
+    \item[Per-stretch press location classifiers.] Three Random Forest classifiers (centre + NW/NE/SE/SW)
+          yield 100\% accuracy across stretches (Table~\ref{tab:offset-single}). A pooled classifier
+          is also produced to support stretches unseen during training.
+    \item[Combined stretch-gated pipeline.] A stretch classifier routes each sample to the pooled or
+          per-stretch press location model and uses the combined force regressor for \(F_z\) prediction.
+          Accuracy remains 100\% (Table~\ref{tab:offset-combined-single}).
+    \item[Training invocation.] The command
+\begin{verbatim}
+python3 src/training/evaluate_single_point_stretch.py \
+    --data-root data/2.5mm_single_test1 \
+    --report data/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+\end{verbatim}
+          regenerates the metrics and updates the model artefacts.
+\end{description}
+
+\subsection{Multi-Point Models}
+\begin{description}[leftmargin=1.5em]
+    \item[Per-stretch force regressors.] The multi-point script now trains three regressors covering
+          the 13-location grid; metrics are listed in Tables~\ref{tab:force-multi} and
+          \ref{tab:force-multi-subset}. Artefacts live in
+          \texttt{data/Multiple\_Points/2.5mm\_single\_test1/models/}.
+    \item[Per-stretch press location classifiers.] Accuracy remains perfect across all press locations
+          (Table~\ref{tab:offset-multi}); pooled and gated variants are summarised in
+          Table~\ref{tab:offset-combined-multi}.
+    \item[Combined stretch-gated pipeline.] A shared stretch detector plus pooled press location classifier
+          mirrors the single-point architecture while handling the extended label space.
+    \item[Training invocation.] To regenerate the models, run
+\begin{verbatim}
+python3 src/franka_controller/franka_skin_test_multiple_points.py
+\end{verbatim}
+          which triggers exploration (optional), data acquisition, and the automated training step.
+\end{description}
+
+\section*{Reproducibility Checklist}
+\begin{enumerate}[leftmargin=1.5em]
+    \item Verify the FT and StretchMagTec sensors stream data before calibration.
+    \item Ensure the skin is stretched by the requested percentage before each run.
+    \item Collect data via \texttt{franka\_skin\_test\_single\_point.py}.
+    \item Run \texttt{evaluate\_single\_point\_stretch.py} and update the tables in this document
+          with the new metrics.
+\end{enumerate}
+\appendix
+\section{Random Forest Hyperparameters}
+\label{sec:appendix-hyperparams}
+\begin{table}[H]
+    \centering
+    \caption{Summary of Random Forest configurations used in the baseline models.}
+    \begin{tabular}{@{}p{4.2cm}p{3.2cm}p{3.2cm}p{3.2cm}@{}}
+        \toprule
+        Setting & Force mapping & Press location classifier & Stretch classifier \\
+        \midrule
+        Estimators & 200 & 200 & 250 \\
+        Max depth & None & None & None \\
+        Features per split & $\sqrt{d}$ (default) & $\sqrt{d}$ & $\sqrt{d}$ \\
+        Bootstrap & Enabled & Enabled & Enabled \\
+        Train/Test split & 70/30 & 70/30 stratified & 70/30 stratified \\
+        Target & $F_z$ (N) & Press location label & Stretch label \\
+        Inputs & 45 tactile digits (full) or 15 digits (central subset) & 45 or 15 digits & 45 or 15 digits \\
+        \bottomrule
+    \end{tabular}
+    \label{tab:rf-params}
+\end{table}
+
 
 \section{Simulation Dataset Evaluation}
 \label{sec:simulation}
@@ -454,268 +898,11 @@ excellent separability across forces, stretches, and contact locations.
     \end{tabular}
 \end{table}
 
-\paragraph{Where to find the artefacts.} The training command above outputs all joblib models inside
+\subsubsection{Where to find the artefacts}
+The training command above outputs all joblib models inside
 \texttt{data/Imported/simulation\_points\_test1/models/}, while the accompanying JSON metrics are saved as
 \texttt{simulation\_points\_test1\_metrics.json} in the same folder. These files mirror the structure used
 for the on-robot runs so that evaluation utilities and GUIs can load them without special cases.
-
-\section{Results and Discussion}
-\label{sec:results}
-
-\subsection{Single-Point Dataset (2.5mm\_single\_test1)}
-\paragraph{Force Mapping.}
-\begin{table}[H]
-    \centering
-    \caption{Force regression metrics with all 15 sensors – single-point test~1.}
-    \label{tab:force-single}
-    \begin{tabular}{@{}lcccccc@{}}
-        \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
-        \midrule
-        stretch\_000pct & 250 & 0.0459 & 0.0458 & 0.0100 & PASS & PASS \\
-        stretch\_010pct & 250 & 0.0489 & 0.0476 & 0.0100 & PASS & PASS \\
-        stretch\_020pct & 250 & 0.0646 & 0.0637 & 0.0100 & PASS & FAIL \\
-        combined (pooled) & 750 & 0.0512 & 0.0511 & 0.0040 & PASS & FAIL \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Force Mapping (central subset).}
-\begin{table}[H]
-    \centering
-    \caption{Force regression using only the five central-neighbourhood sensors – single-point test~1.}
-    \label{tab:force-single-subset}
-    \begin{tabular}{@{}lcccccc@{}}
-        \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
-        \midrule
-        stretch\_000pct & 250 & 0.0449 & 0.0449 & 0.0100 & PASS & PASS \\
-        stretch\_010pct & 250 & 0.0516 & 0.0507 & 0.0100 & PASS & FAIL \\
-        stretch\_020pct & 250 & 0.0719 & 0.0708 & 0.0100 & PASS & FAIL \\
-        combined (pooled) & 750 & 0.0518 & 0.0518 & 0.0040 & PASS & FAIL \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Offset Classification.}
-\begin{table}[H]
-    \centering
-    \caption{Per-stretch offset classification accuracy (full sensors vs. central subset) – single-point test~1.}
-    \label{tab:offset-single}
-    \begin{tabular}{@{}lcccc@{}}
-        \toprule
-        Stretch & Samples & Accuracy (full) & Accuracy (subset) & Notes \\
-        \midrule
-        stretch\_000pct & 250 & 1.000 & 1.000 & Five offsets around the centre \\
-        stretch\_010pct & 250 & 1.000 & 1.000 & --- \\
-        stretch\_020pct & 250 & 1.000 & 1.000 & --- \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Pooled Offset Pipelines.}
-\begin{table}[H]
-    \centering
-    \caption{Combined offset pipelines across all stretches – single-point test~1.}
-    \label{tab:offset-combined-single}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Model & Samples & Accuracy & Notes \\
-        \midrule
-        combined (full features) & 225 & 1.000 & Single Random Forest trained on pooled data \\
-        combined (subset features) & 225 & 1.000 & Uses 15 magnetic channels only \\
-        gated (full features) & 225 & 1.000 & Stretch predicted first, then routed \\
-        gated (subset features) & 225 & 1.000 & Same pipeline with reduced features \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Stretch Classification.}
-\begin{table}[H]
-    \centering
-    \caption{Stretch classification metrics – single-point test~1 (pooled data).}
-    \label{tab:stretch-single}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Metric & Full sensors & Central subset & Notes \\
-        \midrule
-        Samples & 225 & 225 & Random Forest (250 trees) \\
-        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\subsection{Multi-Point Dataset (Multiple\_Points/2.5mm\_single\_test1)}
-\paragraph{Force Mapping.}
-\begin{table}[H]
-    \centering
-    \caption{Force regression metrics – multi-point test~1 (all sensors).}
-    \label{tab:force-multi}
-    \begin{tabular}{@{}lcccccc@{}}
-        \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
-        \midrule
-        stretch\_000pct & 650 & 0.0624 & 0.0623 & 0.0100 & PASS & FAIL \\
-        stretch\_010pct & 650 & 0.0636 & 0.0635 & 0.0100 & PASS & FAIL \\
-        stretch\_020pct & 650 & 0.0640 & 0.0638 & 0.0100 & PASS & FAIL \\
-        combined (pooled) & 1950 & 0.0783 & 0.0783 & 0.0010 & PASS & FAIL \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Force Mapping (central subset).}
-\begin{table}[H]
-    \centering
-    \caption{Force regression using central-neighbourhood sensors – multi-point test~1.}
-    \label{tab:force-multi-subset}
-    \begin{tabular}{@{}lcccccc@{}}
-        \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
-        \midrule
-        stretch\_000pct & 650 & 0.0662 & 0.0662 & 0.0100 & PASS & FAIL \\
-        stretch\_010pct & 650 & 0.0659 & 0.0658 & 0.0100 & PASS & FAIL \\
-        stretch\_020pct & 650 & 0.0634 & 0.0627 & 0.0100 & PASS & FAIL \\
-        combined (pooled) & 1950 & 0.0615 & 0.0615 & 0.0010 & PASS & FAIL \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Offset Classification.}
-\begin{table}[H]
-    \centering
-    \caption{Per-stretch offset accuracy for the expanded offset set (full sensors).}
-    \label{tab:offset-multi}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Stretch & Samples & Accuracy & Notes \\
-        \midrule
-        stretch\_000pct & 650 & 1.000 & Centre + offsets 4–12 \\
-        stretch\_010pct & 650 & 1.000 & --- \\
-        stretch\_020pct & 650 & 1.000 & --- \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Pooled Offset Pipelines.}
-\begin{table}[H]
-    \centering
-    \caption{Combined offset pipelines across all stretches – multi-point test~1.}
-    \label{tab:offset-combined-multi}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Model & Samples & Accuracy & Notes \\
-        \midrule
-        combined (full features) & 585 & 1.000 & Single Random Forest trained on pooled data \\
-        combined (subset features) & 585 & 1.000 & Uses 15 magnetic channels only \\
-        gated (full features) & 585 & 1.000 & Stretch predicted first, then routed \\
-        gated (subset features) & 585 & 1.000 & Same pipeline with reduced features \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\paragraph{Stretch Classification.}
-\begin{table}[H]
-    \centering
-    \caption{Stretch classification metrics – multi-point test~1 (pooled data).}
-    \label{tab:stretch-multi}
-    \begin{tabular}{@{}lccc@{}}
-        \toprule
-        Metric & Full sensors & Central subset & Notes \\
-        \midrule
-        Samples & 585 & 585 & Random Forest (250 trees) \\
-        Accuracy & 1.000 & 1.000 & Identical performance with and without neighbourhood pruning \\
-        \bottomrule
-    \end{tabular}
-\end{table}
-
-\subsection{Discussion}
-\paragraph{Key observations.}
-\begin{itemize}[leftmargin=1.5em]
-    \item The single-point dataset maintains sub-\SI{0.05}{\newton} RMSE for 0~\% and 10~\% stretch, passing KPM2, while the 20~\% condition exhibits higher variance (STD \(\approx\SI{0.064}{\newton}\)) and fails KPM2.
-    \item The multi-point dataset delivers consistent RMSE around \SI{0.063}{\newton} across all 13 offsets. KPM1 stays within tolerance, but KPM2 fails because residual variance remains above \SI{0.05}{\newton}.
-    \item Offset classification reaches 100\% accuracy in both experiments—per stretch, pooled, and gated—showing that spatial features generalise from the five-offset study to the extended 13-location grid.
-    \item Stretch detection remains perfect (100\%) for both datasets, confirming that the magnitude-normalised features preserve elongation cues even under multi-contact excitation.
-    \item Each run directory (`data/2.5mm_single_test1/` and `data/Multiple_Points/2.5mm_single_test1/`) contains the trained models and JSON metrics, enabling reproducible comparisons without rerunning training.
-\end{itemize}
-
-\subsection{Visual Summaries}
-\label{sec:visual-summaries}
-Time-series plots (force components plus Sensor~8 channels) are generated automatically in
-\texttt{plots/single\_point/run\_20251110\_185744/} for the single-point study and in
-\texttt{plots/multi\_point/} for the expanded offsets. To keep this document concise, the PNG files are
-not embedded; re-enable them by uncommenting the figure stubs in this section when a full graphical
-appendix is required.
-
-\section{Model Inventory and Training Pipeline}
-\subsection{Single-Point Models}
-\begin{description}[leftmargin=1.5em]
-    \item[Per-stretch force regressors.] Three Random Forest regressors (0, 10, 20\%) learn the mapping
-          from the 45 magnetic features to \(F_z\). Their metrics are reported in
-          Table~\ref{tab:force-single}. The artefacts are stored in
-          \texttt{data/2.5mm\_single\_test1/models/} alongside the JSON report
-          (\texttt{2.5mm\_single\_test1\_metrics.json}).
-    \item[Per-stretch offset classifiers.] Three Random Forest classifiers (centre + NW/NE/SE/SW)
-          yield 100\% accuracy across stretches (Table~\ref{tab:offset-single}). A pooled classifier
-          is also produced to support stretches unseen during training.
-    \item[Combined stretch-gated pipeline.] A stretch classifier routes each sample to the pooled or
-          per-stretch offset model and uses the combined force regressor for \(F_z\) prediction.
-          Accuracy remains 100\% (Table~\ref{tab:offset-combined-single}).
-    \item[Training invocation.] The command
-\begin{verbatim}
-python3 src/training/evaluate_single_point_stretch.py \
-    --data-root data/2.5mm_single_test1 \
-    --report data/2.5mm_single_test1/2.5mm_single_test1_metrics.json
-\end{verbatim}
-          regenerates the metrics and updates the model artefacts.
-\end{description}
-
-\subsection{Multi-Point Models}
-\begin{description}[leftmargin=1.5em]
-    \item[Per-stretch force regressors.] The multi-point script now trains three regressors covering
-          the 13-offset grid; metrics are listed in Tables~\ref{tab:force-multi} and
-          \ref{tab:force-multi-subset}. Artefacts live in
-          \texttt{data/Multiple\_Points/2.5mm\_single\_test1/models/}.
-    \item[Per-stretch offset classifiers.] Accuracy remains perfect across all offsets
-          (Table~\ref{tab:offset-multi}); pooled and gated variants are summarised in
-          Table~\ref{tab:offset-combined-multi}.
-    \item[Combined stretch-gated pipeline.] A shared stretch detector plus pooled offset classifier
-          mirrors the single-point architecture while handling the extended label space.
-    \item[Training invocation.] To regenerate the models, run
-\begin{verbatim}
-python3 src/franka_controller/franka_skin_test_multiple_points.py
-\end{verbatim}
-          which triggers exploration (optional), data acquisition, and the automated training step.
-\end{description}
-
-\section*{Reproducibility Checklist}
-\begin{enumerate}[leftmargin=1.5em]
-    \item Verify the FT and StretchMagTec sensors stream data before calibration.
-    \item Ensure the skin is stretched by the requested percentage before each run.
-    \item Collect data via \texttt{franka\_skin\_test\_single\_point.py}.
-    \item Run \texttt{evaluate\_single\_point\_stretch.py} and update the tables in this document
-          with the new metrics.
-\end{enumerate}
-\appendix
-\section{Random Forest Hyperparameters}
-\label{sec:appendix-hyperparams}
-\begin{table}[H]
-    \centering
-    \caption{Summary of Random Forest configurations used in the baseline models.}
-    \begin{tabular}{@{}p{4.2cm}p{3.2cm}p{3.2cm}p{3.2cm}@{}}
-        \toprule
-        Setting & Force mapping & Offset classifier & Stretch classifier \\
-        \midrule
-        Estimators & 200 & 200 & 250 \\
-        Max depth & None & None & None \\
-        Features per split & $\sqrt{d}$ (default) & $\sqrt{d}$ & $\sqrt{d}$ \\
-        Bootstrap & Enabled & Enabled & Enabled \\
-        Train/Test split & 70/30 & 70/30 stratified & 70/30 stratified \\
-        Target & $F_z$ (N) & Offset key & Stretch label \\
-        Inputs & 45 tactile digits (full) or 15 digits (central subset) & 45 or 15 digits & 45 or 15 digits \\
-        \bottomrule
-    \end{tabular}
-    \label{tab:rf-params}
-\end{table}
 
 \section*{Acknowledgements}
 We thank the MagTec team for sensor fabrication, data collection, and feedback on the
