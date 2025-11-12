@@ -108,13 +108,23 @@ without running the robot:
 
 5. **View metrics in table format:** To print metrics in a LaTeX-style table format similar to the
    scientific report:
+   
+   **For robot datasets:**
    ```bash
+   # Single-point dataset
    python3 src/training/print_metrics_tables.py data/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+   
+   # Multi-point dataset
    python3 src/training/print_metrics_tables.py data/Multiple_Points/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+   ```
+   
+   **For simulation datasets:**
+   ```bash
    python3 src/training/print_metrics_tables.py data/Imported/simulation_points_test1/simulation_points_test1_metrics.json
    ```
+   
    The script auto-detects the metrics format (robot vs. simulation) and prints force regression,
-   position classification, and stretch classification tables.
+   position classification, and stretch classification tables. See example outputs below.
 
 The scientific report (`doc/single_point_validation.tex`) already contains tables for both
 single-point and multi-point runs; recompiling the document after training will capture the latest
@@ -285,6 +295,81 @@ HDF5 Export → train_simulation_positions.py → Models + Metrics
 ```
 
 Both workflows produce the same model types and can be evaluated using the same tools (e.g., `print_metrics_tables.py`).
+
+### Example Output: Simulation Metrics Tables
+
+After running `train_simulation_positions.py`, you can view the results using:
+
+```bash
+python3 src/training/print_metrics_tables.py data/Imported/simulation_points_test1/simulation_points_test1_metrics.json
+```
+
+**Example output (from actual simulation dataset):**
+
+```
+Reading metrics from: data/Imported/simulation_points_test1/simulation_points_test1_metrics.json
+Format detected: simulation
+
+================================================================================
+Simulation Dataset Metrics
+================================================================================
+
+================================================================================
+Force Regression Metrics (Per-Stretch)
+================================================================================
+Stretch              Samples    RMSE [N]     STD [N]     
+--------------------------------------------------------------------------------
+stretch_000pct       594        0.015411     0.015407    
+stretch_010pct       594        0.016880     0.016880    
+stretch_020pct       594        0.017300     0.017272    
+--------------------------------------------------------------------------------
+combined (pooled)    1782       0.022885     0.022867    
+
+================================================================================
+Position Classification Accuracy (Per-Stretch)
+================================================================================
+Stretch              Samples    Accuracy    
+--------------------------------------------------------------------------------
+stretch_000pct       594        1.000       
+stretch_010pct       594        1.000       
+stretch_020pct       594        1.000       
+--------------------------------------------------------------------------------
+pooled position classifier    1782       0.996       
+
+================================================================================
+Stretch Classification
+================================================================================
+Model                          Samples    Accuracy    
+--------------------------------------------------------------------------------
+pooled stretch classifier      1782       1.000       
+
+================================================================================
+Detected Contact Positions
+================================================================================
+Label                          X [mm]       Y [mm]      
+--------------------------------------------------------------------------------
+x+00.0mm_y+00.0mm              0.0          0.0         
+x+00.5mm_y+01.9mm              0.5          1.9         
+x+00.5mm_y-01.9mm              0.5          -1.9        
+x+01.7mm_y+01.9mm              1.7          1.9         
+x+01.7mm_y-01.9mm              1.7          -1.9        
+x+02.9mm_y+02.0mm              2.9          2.0         
+x+02.9mm_y-02.0mm              2.9          -2.0        
+x-01.5mm_y+00.0mm              -1.5         0.0         
+x-02.9mm_y+02.0mm              -2.9         2.0         
+x-02.9mm_y-02.0mm              -2.9         -2.0        
+x-03.0mm_y+00.0mm              -3.0         0.0         
+x-04.7mm_y+01.9mm              -4.7         1.9         
+x-04.7mm_y-01.9mm              -4.7         -1.9        
+x-06.5mm_y+01.9mm              -6.5         1.9         
+x-06.5mm_y-01.9mm              -6.5         -1.9        
+```
+
+The tables show:
+- **Force Regression**: RMSE and STD for each stretch level and combined model
+- **Position Classification**: Accuracy for detecting which position was pressed
+- **Stretch Classification**: Accuracy for detecting stretch level
+- **Detected Positions**: All unique contact positions found (rounded to 0.1mm)
 
 ---
 
