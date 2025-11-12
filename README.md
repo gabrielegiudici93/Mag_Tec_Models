@@ -68,27 +68,33 @@ without running the robot:
    - A metrics JSON and the trained models are stored alongside the copied HDF5 files.
    - Add `--no-eval` if you only want to stage the data for later analysis or `--overwrite` to replace
      an existing import.
-2. If you only have the raw simulation exports (with the original `MagneticField` arrays and optional
-   `forcesTest`), you can run the lightweight trainer directly:
+2. **Single point only (no position classification):** If you only have one contact location per stretch
+   (e.g., only center, no offsets), use the lightweight trainer:
    ```bash
    python3 src/training/train_simulation_dataset.py \
-       path/to/sim_experiment_data_strecht_0.h5 \
-       path/to/sim_experiment_data_strecht_10.h5 \
-       path/to/sim_experiment_data_strecht_20.h5 \
+       path/to/sim_experiment_data_stretch_0.h5 \
+       path/to/sim_experiment_data_stretch_10.h5 \
+       path/to/sim_experiment_data_stretch_20.h5 \
        --run-label sim_raw_test1
    ```
    - The script flattens the 15×3 sensor grid into features, learns per-stretch force regressors when
      the `forcesTest` target is available, and always fits a stretch classifier.
+   - **Note:** This script does NOT train position classifiers (only force and stretch models).
    - Artefacts and metrics are written to `data/Imported/<run_label>/`.
-3. If the simulation covers several probe points per stretch (e.g. centre plus four offsets), use the
-   position-aware trainer:
+
+3. **Multiple points (center + offsets):** If the simulation covers multiple probe points per stretch
+   (e.g., center + 4 offsets = 5 points, or center + 12 offsets = 13 points), use the position-aware
+   trainer:
    ```bash
    python3 src/training/train_simulation_positions.py \
-       path/to/sim_experiment_data_strecht_0.h5 \
-       path/to/sim_experiment_data_strecht_10.h5 \
-       path/to/sim_experiment_data_strecht_20.h5 \
+       path/to/sim_experiment_data_stretch_0.h5 \
+       path/to/sim_experiment_data_stretch_10.h5 \
+       path/to/sim_experiment_data_stretch_20.h5 \
        --run-label simulation_points_test1 --overwrite
    ```
+   - **Required:** `IdenterPosition` dataset must be present (used to automatically derive position labels).
+   - The script automatically detects all unique contact positions by rounding X/Y coordinates to 0.1mm.
+   - Works for any number of positions: 5 points (center + 4 offsets), 13 points (center + 12 offsets), etc.
    - Outputs live under `data/Imported/<run_label>/`; expect a `models/` folder with per-stretch force
      regressors, position classifiers, and pooled stretch/position models.
    - The generated `<run_label>_metrics.json` summarises RMSE, residual STD, confusion matrices, and the
@@ -99,9 +105,20 @@ without running the robot:
        --data-root data/Imported/sim_test1 \
        --report data/Imported/sim_test1/sim_test1_metrics.json
    ```
-3. The scientific report (`doc/single_point_validation.tex`) already contains tables for both
-   single-point and multi-point runs; recompiling the document after training will capture the latest
-   metrics.
+
+5. **View metrics in table format:** To print metrics in a LaTeX-style table format similar to the
+   scientific report:
+   ```bash
+   python3 src/training/print_metrics_tables.py data/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+   python3 src/training/print_metrics_tables.py data/Multiple_Points/2.5mm_single_test1/2.5mm_single_test1_metrics.json
+   python3 src/training/print_metrics_tables.py data/Imported/simulation_points_test1/simulation_points_test1_metrics.json
+   ```
+   The script auto-detects the metrics format (robot vs. simulation) and prints force regression,
+   position classification, and stretch classification tables.
+
+The scientific report (`doc/single_point_validation.tex`) already contains tables for both
+single-point and multi-point runs; recompiling the document after training will capture the latest
+metrics.
 
 If imported data lack `press_summaries` or stretch metadata, the helper script now fabricates them from
 the raw sensor timelines. When possible, please ensure the simulation export matches the structure
@@ -224,6 +241,50 @@ The `simulation_points_test1_metrics.json` contains:
 - Position labels are derived automatically (e.g., "x+0.0mm_y+0.0mm" for center, "x+2.9mm_y+2.0mm" for NE offset)
 - If you only have single-point data (no multiple positions), use `train_simulation_dataset.py` instead
 - For full KPI suite matching robot data, use `import_dataset.py` followed by `evaluate_single_point_stretch.py`
+
+### How Simulation Models Compare to Robot Models
+
+**Similarities:**
+- **Same model types**: Both use Random Forest for force regression, position classification, and stretch classification
+- **Same input features**: Both use flattened magnetic field data (45 features: 15 sensors × 3 channels)
+- **Same training methodology**: 70/30 train/test split, same hyperparameters (200-400 trees, unlimited depth)
+- **Same output structure**: Models saved as `.joblib` files, metrics in JSON format
+
+**Key Differences:**
+
+1. **Position Detection Method:**
+   - **Robot**: Uses predefined offset keys (center, nw, ne, se, sw, or positions 4-12) from robot configuration
+   - **Simulation**: Automatically derives positions by rounding `IdenterPosition` X/Y coordinates to 0.1mm resolution
+   - **Result**: Simulation labels look like "x+02.9mm_y+02.0mm" instead of "ne" or "4"
+
+2. **Force Ground Truth:**
+   - **Robot**: Uses FT-300S sensor mounted on robot end-effector
+   - **Simulation**: Uses `forcesTest` dataset from simulation (if available)
+   - **Note**: Simulation may have different noise characteristics
+
+3. **Data Structure:**
+   - **Robot**: Data collected with `press_summaries` structure (snapshots at max indentation)
+   - **Simulation**: Raw continuous data; `train_simulation_positions.py` processes it directly
+   - **Conversion**: `import_dataset.py` can convert simulation data to match robot structure
+
+4. **Position Labels:**
+   - **Robot**: Human-readable labels (center, nw, ne, se, sw, 4, 5, 6, etc.)
+   - **Simulation**: Coordinate-based labels (x+00.0mm_y+00.0mm, x+02.9mm_y+02.0mm, etc.)
+   - **Compatibility**: Both formats work with the same training pipeline
+
+**Workflow Comparison:**
+
+**Robot Workflow:**
+```
+Data Collection → press_summaries → evaluate_single_point_stretch.py → Models + Metrics
+```
+
+**Simulation Workflow:**
+```
+HDF5 Export → train_simulation_positions.py → Models + Metrics
+```
+
+Both workflows produce the same model types and can be evaluated using the same tools (e.g., `print_metrics_tables.py`).
 
 ---
 
