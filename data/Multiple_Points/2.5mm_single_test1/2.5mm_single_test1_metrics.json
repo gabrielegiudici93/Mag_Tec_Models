@@ -3,8 +3,8 @@
     {
       "stretch_label": "stretch_000pct",
       "samples": 650,
-      "rmse": 0.062418656453574785,
-      "std_dev": 0.06232202110497138,
+      "rmse": 0.06241865645357488,
+      "std_dev": 0.06232202110497147,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -12,8 +12,8 @@
     {
       "stretch_label": "stretch_010pct",
       "samples": 650,
-      "rmse": 0.0635921806016547,
-      "std_dev": 0.06347528249990161,
+      "rmse": 0.06359218060165474,
+      "std_dev": 0.06347528249990164,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -21,8 +21,8 @@
     {
       "stretch_label": "stretch_020pct",
       "samples": 650,
-      "rmse": 0.06401575808473474,
-      "std_dev": 0.06381429500812433,
+      "rmse": 0.0640157580847348,
+      "std_dev": 0.0638142950081244,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -32,8 +32,8 @@
     {
       "stretch_label": "stretch_000pct_subset",
       "samples": 650,
-      "rmse": 0.06620241465862603,
-      "std_dev": 0.0661819955460078,
+      "rmse": 0.06328921215341562,
+      "std_dev": 0.06295829793548509,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -41,8 +41,8 @@
     {
       "stretch_label": "stretch_010pct_subset",
       "samples": 650,
-      "rmse": 0.06588640783382343,
-      "std_dev": 0.06580906126003488,
+      "rmse": 0.06766190107544125,
+      "std_dev": 0.06764720379728156,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -50,8 +50,8 @@
     {
       "stretch_label": "stretch_020pct_subset",
       "samples": 650,
-      "rmse": 0.06344746531258617,
-      "std_dev": 0.06268449374135232,
+      "rmse": 0.05942642327419081,
+      "std_dev": 0.05942616934453148,
       "force_resolution_est": 0.009999999999999787,
       "kpm1_pass": true,
       "kpm2_pass": false
@@ -60,8 +60,8 @@
   "force_mapping_combined_full": {
     "stretch_label": "combined",
     "samples": 1950,
-    "rmse": 0.0782866162670101,
-    "std_dev": 0.07828199969802314,
+    "rmse": 0.07828661626701007,
+    "std_dev": 0.0782819996980231,
     "force_resolution_est": 0.0009999999999994458,
     "kpm1_pass": true,
     "kpm2_pass": false
@@ -69,8 +69,8 @@
   "force_mapping_combined_subset": {
     "stretch_label": "combined",
     "samples": 1950,
-    "rmse": 0.061515751396381886,
-    "std_dev": 0.06150051900743029,
+    "rmse": 0.061864341269181736,
+    "std_dev": 0.061854155096041356,
     "force_resolution_est": 0.0009999999999994458,
     "kpm1_pass": true,
     "kpm2_pass": false
