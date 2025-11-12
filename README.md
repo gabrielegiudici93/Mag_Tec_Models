@@ -116,25 +116,114 @@ follows:
 
 - `MagneticField` – required; shape `[samples, 15, 3]` with channels ordered (Bx, By, Bz). Sampling
   should remain uniform through each indentation cycle.
+- `IdenterPosition` – required for position-aware training; shape `[samples, 3]` with probe position in
+  metres (X, Y, Z). The pipeline rounds X/Y coordinates to 0.1mm to derive discrete contact labels.
 - `forcesTest` – optional but recommended when the simulator can provide the ground-truth normal force;
-  shape `[samples, 3]` (Fx, Fy, Fz). The new training script falls back to stretch-only models if this
+  shape `[samples, 3]` (Fx, Fy, Fz). The training script falls back to stretch-only models if this
   dataset is absent or constant.
 - `attrs/stretch` – optional string/int identifying the stretch percentage (e.g., `"10"`). If missing,
   the tooling infers the label from the filename (`stretch_010pct`, etc.).
-- `attrs/offset_key` (per press) – optional; when simulating multiple contact locations, add either a
-  dataset or per-press metadata listing labels such as `"11_center"`, `"11_ne"`, … so that the offset
-  classifier can learn meaningful classes. Without at least two distinct offsets, only the stretch and
-  force models will be trained.
 - Time segmentation – if feasible, provide either `press_summaries/` groups or a dataset with press
   boundaries (start / end indices). The import helper can synthesise summaries automatically, but
   supplying them makes the statistics identical to the robot logs.
 
 For best compatibility, mirror the naming convention already used on the robot:
 `<run_label>_stretch_000pct.h5`, `<run_label>_stretch_010pct.h5`, `<run_label>_stretch_020pct.h5`, with
-each file containing a single stretch condition. After exporting, the simulation team can run
-`train_simulation_dataset.py` to obtain quick metrics, `train_simulation_positions.py` when multiple
-contact points are present, or `import_dataset.py` followed by `evaluate_single_point_stretch.py` for the
-full KPI suite (force regressors, stretch classifiers, gated offset pipeline).
+each file containing a single stretch condition.
+
+### Example Usage: Testing Center + 4 Offsets
+
+**Step 1: Data Collection Structure**
+
+Export HDF5 files with the following structure for each stretch level:
+
+**Required datasets:**
+- `MagneticField` [samples, 15, 3]: Raw Bx, By, Bz readings from the 3×5 sensor grid
+- `IdenterPosition` [samples, 3]: Probe position in metres (X, Y, Z) - used to automatically derive position labels
+- `forcesTest` [samples, 3]: (Optional but recommended) Ground-truth forces Fx, Fy, Fz
+
+**What to simulate:**
+- Center position (0, 0)
+- 4 offsets: NW, NE, SE, SW (or positions 4, 5, 6, 7, 9, 10, 11, 12)
+- All at 3 stretch levels: 0%, 10%, 20%
+
+**File naming examples:**
+```
+data/simulation/test1/
+├── sim_experiment_data_stretch_0.h5
+├── sim_experiment_data_stretch_10.h5
+└── sim_experiment_data_stretch_20.h5
+```
+
+Or using the standard naming convention:
+```
+data/simulation/test1/
+├── sim_test1_stretch_000pct.h5
+├── sim_test1_stretch_010pct.h5
+└── sim_test1_stretch_020pct.h5
+```
+
+**Step 2: Run Training Script**
+
+Use `train_simulation_positions.py` when you have multiple probe points (center + offsets):
+
+```bash
+python3 src/training/train_simulation_positions.py \
+    data/simulation/test1/sim_stretch_0.h5 \
+    data/simulation/test1/sim_stretch_10.h5 \
+    data/simulation/test1/sim_stretch_20.h5 \
+    --run-label simulation_points_test1 \
+    --overwrite
+```
+
+**What the script does automatically:**
+1. Loads the HDF5 files
+2. Infers stretch labels from filenames or attributes
+3. Derives position labels by rounding `IdenterPosition` X/Y coordinates to 0.1mm
+4. Trains per-stretch force regressors (if `forcesTest` is provided)
+5. Trains per-stretch position classifiers (center + 4 offsets)
+6. Trains pooled stretch and position classifiers
+7. Saves all models and metrics
+
+**Step 3: Where Results Are Collected**
+
+All results are stored in:
+```
+data/Imported/<run_label>/
+```
+
+**Complete structure:**
+```
+data/Imported/simulation_points_test1/
+├── simulation_points_test1_stretch_000pct.h5    # Original data (preserved)
+├── simulation_points_test1_stretch_010pct.h5
+├── simulation_points_test1_stretch_020pct.h5
+├── models/                                       # Trained models
+│   ├── simulation_points_test1_stretch_000pct_force_regressor.joblib
+│   ├── simulation_points_test1_stretch_000pct_position_classifier.joblib
+│   ├── simulation_points_test1_stretch_010pct_force_regressor.joblib
+│   ├── simulation_points_test1_stretch_010pct_position_classifier.joblib
+│   ├── simulation_points_test1_stretch_020pct_force_regressor.joblib
+│   ├── simulation_points_test1_stretch_020pct_position_classifier.joblib
+│   ├── simulation_points_test1_pooled_position_classifier.joblib
+│   └── simulation_points_test1_pooled_stretch_classifier.joblib
+└── simulation_points_test1_metrics.json          # Performance metrics
+```
+
+**Step 4: What's in the Metrics JSON**
+
+The `simulation_points_test1_metrics.json` contains:
+- Force regression metrics (RMSE, STD) per stretch
+- Position classification accuracy per stretch
+- Pooled position classifier accuracy
+- Pooled stretch classifier accuracy
+- Detected contact positions (rounded X/Y coordinates in mm)
+
+**Important Notes:**
+- The script automatically detects center and offsets from `IdenterPosition` coordinates by rounding to 0.1mm, so no manual labeling is needed
+- Position labels are derived automatically (e.g., "x+0.0mm_y+0.0mm" for center, "x+2.9mm_y+2.0mm" for NE offset)
+- If you only have single-point data (no multiple positions), use `train_simulation_dataset.py` instead
+- For full KPI suite matching robot data, use `import_dataset.py` followed by `evaluate_single_point_stretch.py`
 
 ---
 

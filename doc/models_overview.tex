@@ -1,0 +1,284 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{siunitx}
+\usepackage{enumitem}
+
+\hypersetup{
+    colorlinks=true,
+    urlcolor=blue,
+    linkcolor=blue,
+    citecolor=blue
+}
+
+\title{Models Overview\\\large MagTec Tactile Skin Characterisation}
+\author{MagTec Team}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document provides a brief overview of all machine learning models used in the MagTec tactile skin characterisation pipeline, including their purpose, training methodology, and operational principles. Both on-robot and simulation models are covered.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Model Types Overview}
+
+The MagTec characterisation pipeline employs three main types of machine learning models, all based on Random Forest algorithms:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Force Mapping Regressors}: Predict normal force \(F_z\) from magnetic field features
+    \item \textbf{Press Location Classifiers}: Classify which spatial location was pressed
+    \item \textbf{Stretch Classifiers}: Predict the skin elongation level (0\%, 10\%, or 20\%)
+\end{enumerate}
+
+Additionally, a \textbf{Gated Pipeline} combines stretch and location classification in a two-stage approach.
+
+\section{Force Mapping Regressors}
+
+\subsection{Purpose}
+Predict the normal force component \(F_z\) (in Newtons) from the magnetic field sensor readings.
+
+\textbf{Note:} Currently, only \(F_z\) (normal/vertical force) is predicted. The tangential force components \(F_x\) and \(F_y\) are not estimated, as the vertical indentation protocol primarily generates normal forces. The FT sensor provides \((F_x, F_y, F_z, T_x, T_y, T_z)\), but only \(F_z\) is used as the target variable for training.
+
+\subsection{Input Features}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Full array}: 45 features (15 sensors \(\times\) 3 magnetic channels: \(B_x, B_y, B_z\))
+    \item \textbf{Ablation study}: 9 features (3 central sensors \(\times\) 3 channels: sensors 7, 8, 9)
+\end{itemize}
+
+The magnetic field data is flattened from a \(15 \times 3\) matrix into a single 45-length vector:
+\[
+    \mathbf{s} = \left[\begin{array}{cccc}
+        S_{1x} & S_{1y} & S_{1z} & \dotsc S_{15z}
+    \end{array}\right]^T
+\]
+
+\subsection{Training Methodology}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Per-stretch models}: One Random Forest regressor per stretch level (0\%, 10\%, 20\%)
+    \item \textbf{Combined model}: One regressor trained on pooled data across all stretches
+    \item \textbf{Data split}: 70/30 train/test split
+    \item \textbf{Hyperparameters}: 200 trees, unlimited depth, bootstrap enabled
+    \item \textbf{Target}: \(F_z\) force component only (continuous value in Newtons). Note: \(F_x\) and \(F_y\) are not predicted.
+\end{itemize}
+
+\subsection{How It Works}
+The model learns the mapping:
+\[
+    \hat{F}_z = f_s(\mathbf{s})
+\]
+where \(f_s\) is a Random Forest function that takes the magnetic field vector \(\mathbf{s}\) and outputs a predicted force value. The model captures the relationship between magnet displacement (encoded in magnetic field changes) and applied force.
+
+\subsection{Performance Metrics}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{RMSE} (Root Mean Square Error): Measures prediction accuracy
+    \item \textbf{STD} (Standard Deviation of residuals): Measures precision
+    \item \textbf{Force Resolution} (\(\Delta F_{\text{min}}\)): Minimum distinguishable force difference
+\end{itemize}
+
+\section{Press Location Classifiers}
+
+\subsection{Purpose}
+Classify which spatial location on the skin was pressed, given the magnetic field sensor readings.
+
+\subsection{Input Features}
+Same as force regressors: 45 features (full array) or 9 features (central subset for ablation study).
+
+\subsection{Training Methodology}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Per-stretch classifiers}: One Random Forest classifier per stretch level
+    \item \textbf{Combined classifier}: One classifier trained on pooled data (stretch-invariant)
+    \item \textbf{Data split}: 70/30 train/test split, stratified by stretch
+    \item \textbf{Hyperparameters}: 200 trees, unlimited depth, bootstrap enabled
+    \item \textbf{Target}: Discrete location labels
+        \begin{itemize}
+            \item \textbf{Single-point dataset}: \(\{\text{center}, \text{nw}, \text{ne}, \text{se}, \text{sw}\}\) (5 classes)
+            \item \textbf{Multi-point dataset}: \(\{\text{center}, \text{nw}, \text{ne}, \text{se}, \text{sw}, 4, 5, 6, 7, 9, 10, 11, 12\}\) (13 classes)
+        \end{itemize}
+\end{itemize}
+
+\subsection{How It Works}
+The per-stretch classifier learns the mapping:
+\[
+    \hat{p}_s: \mathbf{s} \mapsto \{c_1, c_2, \ldots, c_{n_s}\}
+\]
+where \(c_i\) are the press location classes available for stretch level \(s\). The classifier identifies spatial patterns in the magnetic field that correspond to different contact locations.
+
+The combined classifier learns stretch-invariant patterns:
+\[
+    \hat{p}_{\text{comb}}: \mathbf{s} \mapsto \{c_1, c_2, \ldots, c_n\}
+\]
+where the class set includes all press locations seen across all stretch levels.
+
+\subsection{Performance Metrics}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Accuracy}: Overall classification accuracy
+    \item \textbf{Precision}: Per-class precision (\(\text{TP}_c / (\text{TP}_c + \text{FP}_c)\))
+    \item \textbf{Recall}: Per-class recall (\(\text{TP}_c / (\text{TP}_c + \text{FN}_c)\))
+    \item \textbf{F1-score}: Harmonic mean of precision and recall
+\end{itemize}
+
+\section{Stretch Classifier}
+
+\subsection{Purpose}
+Predict the skin elongation level (0\%, 10\%, or 20\%) from the magnetic field sensor readings.
+
+\subsection{Input Features}
+Same as other models: 45 features (full array) or 9 features (central subset).
+
+\subsection{Training Methodology}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Single classifier}: One Random Forest classifier trained on pooled dataset
+    \item \textbf{Data split}: 70/30 train/test split, stratified by stretch
+    \item \textbf{Hyperparameters}: 250 trees, unlimited depth, bootstrap enabled
+    \item \textbf{Target}: Stretch level labels \(\{0\%, 10\%, 20\%\}\) (3 classes)
+\end{itemize}
+
+\subsection{How It Works}
+The classifier learns the mapping:
+\[
+    \hat{l}: \mathbf{s} \mapsto \{0\%, 10\%, 20\%\}
+\]
+The model detects how skin elongation changes the magnetic field patterns. As the skin stretches, the magnet grid geometry changes, producing distinct signatures in the magnetic field measurements.
+
+\subsection{Performance Metrics}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Accuracy}: Overall classification accuracy
+    \item \textbf{Per-class metrics}: Precision, recall, and F1-score for each stretch level
+\end{itemize}
+
+\section{Gated Pipeline}
+
+\subsection{Purpose}
+A two-stage classification system that combines stretch detection with location classification for robust press location prediction.
+
+\subsection{How It Works}
+The gated pipeline uses a hierarchical approach:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Stage 1}: Predict stretch level using the stretch classifier
+        \[
+            \hat{l}(\mathbf{s}) \in \{0\%, 10\%, 20\%\}
+        \]
+    \item \textbf{Stage 2}: Route to the corresponding per-stretch press location classifier
+        \[
+            \hat{p} = \begin{cases}
+                \hat{p}_{\hat{l}(\mathbf{s})}(\mathbf{s}) & \text{if per-stretch model exists and is trained}, \\
+                \hat{p}_{\text{comb}}(\mathbf{s}) & \text{otherwise (fallback to combined classifier)}.
+            \end{cases}
+        \]
+\end{enumerate}
+
+\subsection{Advantages}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Robustness}: Falls back to combined classifier if per-stretch model unavailable
+    \item \textbf{Specialization}: Uses stretch-specific models when available for better accuracy
+    \item \textbf{Flexibility}: Handles unseen stretch levels gracefully
+\end{itemize}
+
+\section{Simulation Models}
+
+\subsection{Overview}
+The simulation models use the same architecture and training methodology as the on-robot models, but are trained on synthetic data generated by finite element simulations.
+
+\subsection{Data Source}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Input format}: HDF5 files containing:
+        \begin{itemize}
+            \item \texttt{MagneticField} \((N, 15, 3)\): Raw \(B_x, B_y, B_z\) readings
+            \item \texttt{IdenterPosition} \((N, 3)\): Tool pose in metres
+            \item \texttt{forcesTest} \((N, 3)\): Cartesian forces (Fx, Fy, Fz)
+        \end{itemize}
+    \item \textbf{Position labels}: Derived by rounding indenter \(x/y\) coordinates to 0.1~mm
+    \item \textbf{Stretch labels}: Inferred from filenames or dataset attributes
+\end{itemize}
+
+\subsection{Model Types}
+The simulation pipeline trains the same model types:
+\begin{itemize}[leftmargin=1.5em]
+    \item Per-stretch force regressors (if \texttt{forcesTest} is present)
+    \item Per-stretch position classifiers
+    \item Pooled stretch classifier
+    \item Pooled position classifier
+\end{itemize}
+
+\subsection{Training Process}
+\begin{enumerate}[leftmargin=1.5em]
+    \item Convert simulation HDF5 files to match robot data structure
+    \item Extract magnetic field features (flatten to 45-length vector)
+    \item Derive position labels from \texttt{IdenterPosition} coordinates
+    \item Train models using identical pipeline as on-robot data
+    \item Export models and metrics to \texttt{data/Imported/<run-label>/models/}
+\end{enumerate}
+
+\subsection{Key Differences from On-Robot Models}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{No physical FT sensor}: Uses \texttt{forcesTest} from simulation instead
+    \item \textbf{Position derivation}: Labels derived from indenter coordinates rather than robot offsets
+    \item \textbf{Data quality}: Synthetic signals may have different noise characteristics
+    \item \textbf{Training pipeline}: Uses \texttt{train\_simulation\_positions.py} instead of \texttt{evaluate\_single\_point\_stretch.py}
+\end{itemize}
+
+\section{Training Pipeline}
+
+\subsection{General Workflow}
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Data Collection}: Robot presses at multiple locations/stretches → HDF5 files with press summaries
+    \item \textbf{Feature Extraction}: Flatten \(15 \times 3\) magnetic channels → 45-length vector
+    \item \textbf{Train/Test Split}: 70/30 stratified split (by stretch for classification)
+    \item \textbf{Model Training}: Random Forest with specified hyperparameters
+    \item \textbf{Evaluation}: Compute metrics (RMSE, accuracy, etc.) on test set
+    \item \textbf{Export}: Save models as joblib files in \texttt{models/} subdirectory
+    \item \textbf{Reporting}: Generate JSON metrics file with all performance indicators
+\end{enumerate}
+
+\subsection{Hyperparameters Summary}
+All models use Random Forest with the following common settings:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Force regressors}: 200 trees, unlimited depth
+    \item \textbf{Location classifiers}: 200 trees, unlimited depth
+    \item \textbf{Stretch classifier}: 250 trees, unlimited depth
+    \item \textbf{Features per split}: \(\sqrt{d}\) (default)
+    \item \textbf{Bootstrap}: Enabled
+    \item \textbf{Random state}: 42 (for reproducibility)
+\end{itemize}
+
+\subsection{Model Storage}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{On-robot models}: \texttt{data/<run-label>/models/}
+    \item \textbf{Simulation models}: \texttt{data/Imported/<run-label>/models/}
+    \item \textbf{Format}: Joblib files (Python serialization)
+    \item \textbf{Metrics}: JSON files with performance metrics
+\end{itemize}
+
+\section{Model Relationships}
+
+All models share the same input feature space (magnetic field measurements) but differ in their:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Target variable}: Continuous (force) vs. discrete (location, stretch)
+    \item \textbf{Training data subset}: Per-stretch vs. pooled across stretches
+    \item \textbf{Output space}: Regression (force value) vs. classification (class label)
+\end{itemize}
+
+The gated pipeline demonstrates how multiple models can be combined to create a more robust system that leverages both stretch-specific and general patterns in the data.
+
+\section*{Summary}
+
+The MagTec characterisation pipeline employs a comprehensive set of Random Forest models to:
+\begin{itemize}[leftmargin=1.5em]
+    \item Predict applied forces from magnetic field patterns
+    \item Classify press locations with high accuracy
+    \item Detect skin elongation states
+    \item Combine models in a gated pipeline for robust operation
+\end{itemize}
+
+All models are trained using consistent methodologies and can be applied to both on-robot and simulation data, enabling validation and comparison across different data sources.
+
+\end{document}
+
