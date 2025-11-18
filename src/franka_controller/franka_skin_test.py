@@ -22,6 +22,7 @@ import numpy as np
 import time
 import serial
 import threading
+import re
 from datetime import datetime
 import h5py
 import libscrc
@@ -530,7 +531,7 @@ def move_relative(r, dx, dy, dz, duration=MOVEMENT_DURATION):
 # =============================================================================
 # MAIN DATA COLLECTION
 # =============================================================================
-if __name__ == '__main__':
+def main():
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
 
@@ -549,9 +550,42 @@ if __name__ == '__main__':
     r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
     print("Robot connected successfully")
     
-    # Initial calibrations (ALWAYS done at start)
+    # Determine target position for calibration (first position to test)
+    position_ids_to_test = get_positions_to_test()
+    if position_ids_to_test:
+        first_position_id = position_ids_to_test[0]
+        base_position = MAIN_GRID_POSITIONS[first_position_id]
+        print(f"\nBase position (from MAIN_GRID_POSITIONS[{first_position_id}]): [{base_position[0]:.6f}, {base_position[1]:.6f}, {base_position[2]:.6f}]")
+        # Get center offset position - center has offset [0,0,0], so base_position is already the center
+        offsets_to_test = get_offsets_to_test()
+        center_offset = 'center' if 'center' in offsets_to_test else offsets_to_test[0] if offsets_to_test else 'center'
+        # For center, target_position should be the same as base_position (offset is [0,0,0])
+        target_position = get_position_with_offset(base_position, center_offset)
+        print(f"Target position (center offset applied): [{target_position[0]:.6f}, {target_position[1]:.6f}, {target_position[2]:.6f}]")
+        
+        # Set "Z-down" orientation
+        rotation_matrix = R.from_euler('x', 180, degrees=True).as_matrix()
+        
+        # Move to calibration position (5mm above target)
+        calibration_position = np.array(target_position).copy()
+        calibration_position[2] += 0.005  # Lift 5mm above target
+        
+        calibration_pose = np.eye(4)
+        calibration_pose[:3, :3] = rotation_matrix
+        calibration_pose[:3, 3] = calibration_position
+        
+        print(f"\nMoving to calibration position: 5mm above target position {first_position_id} ({center_offset})")
+        print(f"Calibration coordinates: [{calibration_position[0]:.6f}, {calibration_position[1]:.6f}, {calibration_position[2]:.6f}]")
+        r.move("absolute", calibration_pose, ABSOLUTE_MOVEMENT_DURATION)
+        time.sleep(1.0)  # Wait for stabilization
+    else:
+        # Fallback: use current position
+        print("⚠️  No positions to test - calibration will be done at current position")
+        rotation_matrix = R.from_euler('x', 180, degrees=True).as_matrix()
+    
+    # Initial calibrations (ALWAYS done at start, at 5mm above target)
     print("\n" + "="*70)
-    print("INITIAL SENSOR CALIBRATION")
+    print("INITIAL SENSOR CALIBRATION (at 5mm above target position)")
     print("="*70)
     
     # Temporarily enable calibration objects for initial calibration
@@ -586,22 +620,35 @@ if __name__ == '__main__':
 
     try:
         wait_for_initial_calibration_complete(ft_calibration, stretchmagtec_calibration)
-        print("Initial calibrations complete. Proceeding with data collection.\n")
+        print("Initial calibrations complete.")
     except RuntimeError as exc:
         print(str(exc))
         raise
+    
+    # Move to center position after calibration
+    # Use base_position directly (it's already the center position, no offset needed)
+    if position_ids_to_test:
+        center_position = base_position  # Base position is already the center (no offset applied)
+        center_pose = np.eye(4)
+        center_pose[:3, :3] = rotation_matrix
+        center_pose[:3, 3] = center_position
+        
+        print(f"\nMoving to center position: [{center_position[0]:.6f}, {center_position[1]:.6f}, {center_position[2]:.6f}]")
+        r.move("absolute", center_pose, ABSOLUTE_MOVEMENT_DURATION)
+        time.sleep(1.0)  # Wait for stabilization
+        print("Proceeding with data collection.\n")
+    else:
+        print("Proceeding with data collection.\n")
     
     # Start continuous logger
     logger = ContinuousLoggerThread(r, ft_thread)
     logger.daemon = True
     logger.start()
 
-    # Set "Z-down" orientation
-    rotation_matrix = R.from_euler('x', 180, degrees=True).as_matrix()
-
     try:
-        # Determine which positions to test from config
-        position_ids_to_test = get_positions_to_test()
+        # Determine which positions to test from config (already done above, but get offsets)
+        if not position_ids_to_test:
+            position_ids_to_test = get_positions_to_test()
         offsets_to_test = get_offsets_to_test()
         
         all_position_ids = sorted(MAIN_GRID_POSITIONS.keys())
@@ -649,25 +696,56 @@ if __name__ == '__main__':
                 # Get position coordinates with offset
                 desired_position = get_position_with_offset(base_position, offset_key)
                 
+                # Before moving to new position: lift 5mm to avoid sliding on surface
+                # (Only lift if not the first offset, i.e., when moving from one offset to another)
+                if offset_count > 1:  # Not the first offset (center)
+                    print(f"Lifting 5mm before moving to {offset_key}...")
+                    move_relative(r, 0, 0, 0.005, duration=ABSOLUTE_MOVEMENT_DURATION)
+                    time.sleep(0.5)
+                
                 # Create desired pose
                 des_pos_fingertip_setup = np.eye(4)
                 des_pos_fingertip_setup[:3, :3] = rotation_matrix
                 des_pos_fingertip_setup[:3, 3] = desired_position
                 
+                # If we lifted, move to position at lifted height (add 5mm to Z)
+                if offset_count > 1:
+                    des_pos_fingertip_setup[2, 3] += 0.005
+                
                 # Move to position
                 r.move("absolute", des_pos_fingertip_setup, ABSOLUTE_MOVEMENT_DURATION)
                 print(f"Moved to position {position_id} ({row},{col}) - {offset_key}")
-                print(f"Coordinates: [{desired_position[0]:.6f}, {desired_position[1]:.6f}, {desired_position[2]:.6f}]")
+                
+                # Lower 5mm to target position (if we lifted)
+                if offset_count > 1:
+                    print(f"Lowering 5mm to target position...")
+                    move_relative(r, 0, 0, -0.005, duration=ABSOLUTE_MOVEMENT_DURATION)
+                    time.sleep(0.5)
+                
+                print(f"Final coordinates: [{desired_position[0]:.6f}, {desired_position[1]:.6f}, {desired_position[2]:.6f}]")
                 
                 # Wait for stabilization
                 time.sleep(1)
+                
+                # For force-controlled pressing: get the ORIGINAL starting Z position ONCE before all presses
+                # This ensures all presses start from and return to the same position
+                reference_initial_z = None
+                if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
+                    reference_state = r.getState()
+                    reference_initial_z = reference_state.T[2, 3]
+                    print(f"Reference Z position for all presses: {reference_initial_z:.6f}m")
                 
                 # Perform press cycles at this position
                 for press_num in range(NUMBER_OF_PRESSES):
                     press_id = PRESS_IDS[press_num]
                     logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
                     
-                    print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id})")
+                    # Skip first press (discard it)
+                    skip_first_press = (press_num == 0)
+                    if skip_first_press:
+                        print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}) - DISCARDING (first press)")
+                    else:
+                        print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id})")
                     
                     # Calibrate before press (optional, per-position calibration)
                     if FT_PER_POSITION_CALIBRATION_ENABLED:
@@ -675,12 +753,126 @@ if __name__ == '__main__':
                     if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
                         stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
                     
-                    # Perform press steps
-                    for step_num in range(STEPS_PER_PRESS):
-                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
-                        move_relative(r, 0, 0, DZ_PRESS)
-                        print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
-                        time.sleep(PRESS_DELAY)
+                    # Perform force-controlled press: stop at 1.0N to 3.0N in 0.1N steps for 1s each
+                    # OR position-controlled press (if FORCE_CONTROLLED_PRESS is False)
+                    if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
+                        # Force-controlled pressing: use config parameters
+                        force_min = getattr(config_module, "FORCE_MIN", 1.0)
+                        force_max = getattr(config_module, "FORCE_MAX", 3.0)
+                        force_step = getattr(config_module, "FORCE_STEP_SIZE", 0.1)
+                        target_forces = np.arange(force_min, force_max + force_step, force_step).tolist()
+                        force_tolerance = getattr(config_module, "FORCE_TOLERANCE", 0.01)
+                        data_collection_duration = getattr(config_module, "FORCE_STEP_DELAY", 1.0)  # Stay at each force level
+                        
+                        # CRITICAL: Return to reference position BEFORE starting this press
+                        # This ensures all presses start from the same position
+                        # NO LIFTING - just return to reference position
+                        if reference_initial_z is not None:
+                            current_state = r.getState()
+                            current_z = current_state.T[2, 3]
+                            z_diff = current_z - reference_initial_z
+                            if abs(z_diff) > 0.0001:  # More than 0.1mm difference
+                                print(f"  Returning to reference position (moving {z_diff*1000:.2f}mm)...")
+                                move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)
+                                time.sleep(0.3)
+                        
+                        # Wait a moment for stabilization
+                        time.sleep(0.2)
+                        
+                        # Get current Z position for tracking indentation (should be at reference_initial_z)
+                        start_state = r.getState()
+                        start_z = start_state.T[2, 3]
+                        max_indentation = 0.005  # 5mm safety limit
+                        
+                        print(f"Press {press_id} - Force-controlled pressing: {target_forces}N")
+                        print(f"  Starting from Z position: {start_z:.6f}m")
+                        
+                        # Flag to track if this is the first movement (for sequence_start)
+                        first_movement = True
+                        
+                        for force_step, target_force in enumerate(target_forces):
+                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_force_{target_force:.1f}N")
+                            print(f"  Target force: {target_force:.1f} N (step {force_step + 1}/{len(target_forces)})")
+                            
+                            # Control loop: adjust position to reach target force
+                            max_iterations = 500  # Safety limit
+                            iteration = 0
+                            
+                            while iteration < max_iterations:
+                                # Check current position for safety
+                                current_state = r.getState()
+                                current_z = current_state.T[2, 3]
+                                current_indentation = abs(start_z - current_z)
+                                
+                                # Safety check: stop if maximum indentation exceeded
+                                if current_indentation >= max_indentation:
+                                    print(f"    ⚠️  Safety stop: Maximum indentation ({max_indentation*1000:.1f}mm) reached")
+                                    break
+                                
+                                # Read force (single reading for speed - sensor thread updates continuously)
+                                current_ft = ft_thread.get_ft()
+                                current_fz_abs = abs(current_ft[2])
+                                
+                                # Determine movement direction based on current vs target force (using abs values)
+                                # IMPORTANT: If force exceeds target, don't go back - just stop and proceed
+                                if current_fz_abs >= target_force - force_tolerance:
+                                    # Force is at or above target - stop here and proceed (don't go back)
+                                    print(f"    Target reached (or exceeded): {current_fz_abs:.3f} N (indentation: {current_indentation*1000:.2f}mm)")
+                                    break
+                                elif current_fz_abs < target_force - force_tolerance:
+                                    # CRITICAL: Mark the start of data collection IMMEDIATELY before the FIRST movement
+                                    # This ensures the sequence starts exactly when the robot begins pressing
+                                    if first_movement:
+                                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_start")
+                                        first_movement = False
+                                    
+                                    # Force is too low - press down to increase force
+                                    # This is the actual movement - sequence_start is set just before this
+                                    move_relative(r, 0, 0, -0.0001, duration=0.05)  # Move down, faster
+                                    time.sleep(0.05)  # Reduced wait time
+                                
+                                iteration += 1
+                            
+                            if iteration >= max_iterations:
+                                print(f"    ⚠️  Warning: Max iterations reached for {target_force:.1f}N target")
+                            
+                            # Stay at this force level for data collection (1 second)
+                            print(f"    Collecting data at {target_force:.1f}N for {data_collection_duration:.1f}s...")
+                            time.sleep(data_collection_duration)
+                            
+                            # CRITICAL: Mark sequence_end IMMEDIATELY after the wait at the LAST target force
+                            # This ensures the sequence ends exactly when data collection is complete, before any return movement
+                            if force_step == len(target_forces) - 1:  # Last target force
+                                logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_end")
+                                print(f"  Sequence complete - reached {target_forces[-1]:.1f}N")
+                                # CRITICAL: Wait a tiny bit to ensure the logger captures at least one sample with sequence_end label
+                                time.sleep(0.01)  # 10ms to ensure one sample is logged with sequence_end
+                                # Then immediately change label to prevent logging more samples with sequence_end
+                                logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_return")
+                        
+                        print(f"  Force-controlled press complete - reached {target_forces[-1]:.1f}N")
+                        
+                        # For force-controlled pressing: return to REFERENCE initial Z position
+                        # This ensures the next press starts from the same reference position
+                        if reference_initial_z is not None:
+                            current_state = r.getState()
+                            current_z = current_state.T[2, 3]
+                            z_diff = current_z - reference_initial_z  # How much we need to move to return to reference
+                            if abs(z_diff) > 0.0001:  # More than 0.1mm difference
+                                logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_lift")
+                                print(f"Press {press_id} complete - Returning to reference position (moving {z_diff*1000:.2f}mm)")
+                                move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)  # Move back to reference_initial_z
+                                time.sleep(LIFT_DELAY)
+                            else:
+                                print(f"Press {press_id} complete - Already at reference position")
+                                time.sleep(0.2)
+                    else:
+                        # Original position-controlled pressing
+                        for step_num in range(STEPS_PER_PRESS):
+                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
+                            move_relative(r, 0, 0, DZ_PRESS)
+                            print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
+                            time.sleep(PRESS_DELAY)
 
                     # Capture press snapshot before lifting
                     with stretchmagtec_data_lock:
@@ -766,13 +958,150 @@ if __name__ == '__main__':
         timestamps_arr = np.array(logger.timestamps, dtype='S26')
         labels_arr = np.array(logger.labels, dtype='S64')
         
+        # Extract individual press sequences using sequence_start and sequence_end labels
+        # Each press is saved as a separate entry in the HDF5 file
+        # IMPORTANT: We need to find the FIRST occurrence of _sequence_start for each press,
+        # not all occurrences (since the label persists until changed)
+        press_sequences = []
+        current_sequence_start = None
+        last_sequence_start_label = None  # Track the label to detect new sequences
+        
+        for idx, label in enumerate(labels_arr):
+            label_str = label.decode('utf-8') if isinstance(label, bytes) else str(label)
+            
+            if '_sequence_start' in label_str:
+                # Check if this is a NEW sequence (different press_id) or continuation of same label
+                if current_sequence_start is None or label_str != last_sequence_start_label:
+                    # This is a new sequence start
+                    if current_sequence_start is not None:
+                        # Save previous sequence if it exists (shouldn't happen normally, but handle it)
+                        press_sequences.append({
+                            'start_idx': current_sequence_start,
+                            'end_idx': idx - 1,
+                            'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
+                        })
+                    current_sequence_start = idx
+                    last_sequence_start_label = label_str
+            elif '_sequence_end' in label_str and current_sequence_start is not None:
+                # End of current press sequence
+                # CRITICAL: end_idx is the index of the sample WITH the sequence_end label
+                # We include this sample (inclusive), so we use end_idx: end_idx+1 in slicing
+                press_sequences.append({
+                    'start_idx': current_sequence_start,
+                    'end_idx': idx,  # This is the index of the sample with sequence_end label
+                    'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
+                })
+                current_sequence_start = None
+                last_sequence_start_label = None
+        
+        # If there's a sequence that didn't end, include it
+        if current_sequence_start is not None:
+            press_sequences.append({
+                'start_idx': current_sequence_start,
+                'end_idx': len(labels_arr) - 1,
+                'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
+            })
+        
+        # Filter out first press (discard it)
+        # First press has press_id = PRESS_IDS[0] (usually 'A')
+        filtered_sequences = []
+        for seq in press_sequences:
+            label_str = seq['label']
+            # Extract press_id from label (e.g., "pos_32_center_press_A_sequence_start" -> "A")
+            match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
+            if match:
+                press_id = match.group(1)
+                # Skip first press (PRESS_IDS[0])
+                if press_id != PRESS_IDS[0]:
+                    filtered_sequences.append(seq)
+            else:
+                # If we can't identify the press, keep it (shouldn't happen)
+                filtered_sequences.append(seq)
+        
+        print(f"Found {len(press_sequences)} press sequences, keeping {len(filtered_sequences)} (discarded first press)")
+        
         with h5py.File(filename, "w") as f:
-            # Save continuous data
+            # Save continuous data (for backward compatibility)
             f.create_dataset("forces", data=forces_array)
             f.create_dataset("stretchmagtec", data=stretchmagtec_array)
             f.create_dataset("positions", data=positions_arr)
             f.create_dataset("timestamps", data=timestamps_arr)
             f.create_dataset("labels", data=labels_arr)
+            
+            # Save each press as a separate entry in presses group
+            if filtered_sequences:
+                presses_group = f.create_group("presses")
+                for seq_idx, seq in enumerate(filtered_sequences):
+                    start_idx = seq['start_idx']
+                    # end_idx is the index of the sample WITH the sequence_end label
+                    # We want to include this sample, so we use end_idx + 1 for slicing (exclusive end)
+                    end_idx = seq['end_idx'] + 1  # +1 because Python slicing is exclusive of end
+                    
+                    press_group = presses_group.create_group(f"press_{seq_idx:03d}")
+                    press_group.create_dataset("forces", data=forces_array[start_idx:end_idx])
+                    press_group.create_dataset("stretchmagtec", data=stretchmagtec_array[start_idx:end_idx])
+                    press_group.create_dataset("positions", data=positions_arr[start_idx:end_idx])
+                    
+                    # CRITICAL: Normalize timestamps to start from 0 for each sequence
+                    # Convert timestamps to relative time (seconds since sequence start)
+                    seq_timestamps = timestamps_arr[start_idx:end_idx]
+                    if len(seq_timestamps) > 0:
+                        # Convert first timestamp to reference
+                        first_ts_str = seq_timestamps[0].decode('utf-8') if isinstance(seq_timestamps[0], bytes) else str(seq_timestamps[0])
+                        try:
+                            first_ts = datetime.fromisoformat(first_ts_str.replace('Z', '+00:00')) if 'T' in first_ts_str else datetime.fromisoformat(first_ts_str)
+                            # Create relative timestamps (seconds since sequence start)
+                            relative_times = []
+                            for ts_bytes in seq_timestamps:
+                                ts_str = ts_bytes.decode('utf-8') if isinstance(ts_bytes, bytes) else str(ts_bytes)
+                                try:
+                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00')) if 'T' in ts_str else datetime.fromisoformat(ts_str)
+                                    relative_seconds = (ts - first_ts).total_seconds()
+                                    relative_times.append(relative_seconds)
+                                except:
+                                    # Fallback: use index-based time
+                                    relative_times.append(len(relative_times) / 100.0)
+                            
+                            # Save as numeric array (seconds, starting from 0)
+                            press_group.create_dataset("timestamps", data=np.array(relative_times, dtype=float))
+                        except:
+                            # Fallback: use index-based time (100 Hz sampling)
+                            relative_times = np.arange(len(seq_timestamps)) / 100.0
+                            press_group.create_dataset("timestamps", data=relative_times)
+                    else:
+                        press_group.create_dataset("timestamps", data=np.array([], dtype=float))
+                    
+                    press_group.create_dataset("labels", data=labels_arr[start_idx:end_idx])
+                    
+                    # Calculate and save indentation (relative Z change from initial position)
+                    seq_positions = positions_arr[start_idx:end_idx]
+                    if len(seq_positions) > 0:
+                        initial_z = seq_positions[0][2]  # Z coordinate of first sample
+                        indentation = seq_positions[:, 2] - initial_z  # Negative values = indentation (pressing down)
+                        press_group.create_dataset("indentation", data=indentation)
+                        press_group.attrs["initial_z"] = float(initial_z)
+                        press_group.attrs["max_indentation"] = float(np.min(indentation))  # Most negative = deepest press
+                    
+                    # Store metadata
+                    press_group.attrs["label"] = seq['label']
+                    press_group.attrs["start_idx"] = start_idx
+                    press_group.attrs["end_idx"] = end_idx
+                    press_group.attrs["num_samples"] = end_idx - start_idx
+                    
+                    # Store stretch level (from file attributes or config)
+                    if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
+                        press_group.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
+                    elif "stretch_level" in f.attrs:
+                        press_group.attrs["stretch_level"] = float(f.attrs["stretch_level"])
+                    else:
+                        press_group.attrs["stretch_level"] = np.nan
+                    
+                    if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
+                        press_group.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
+                    elif "stretch_label" in f.attrs:
+                        press_group.attrs["stretch_label"] = str(f.attrs["stretch_label"])
+                    else:
+                        press_group.attrs["stretch_label"] = "unknown"
             
             # Save file attributes
             f.attrs["sensor_name"] = SENSOR_NAME
@@ -781,14 +1110,16 @@ if __name__ == '__main__':
             f.attrs["grid_cols"] = GRID_COLS
             f.attrs["grid_dx"] = GRID_DX
             f.attrs["grid_dy"] = GRID_DY
-            f.attrs["reference_position"] = REFERENCE_POSITION
+            # Ensure reference_position is saved as numpy array (matching stable format)
+            f.attrs["reference_position"] = np.array(REFERENCE_POSITION, dtype=np.float64)
             f.attrs["grid_offsets"] = str(GRID_OFFSETS)
             f.attrs["number_of_presses"] = NUMBER_OF_PRESSES
             f.attrs["steps_per_press"] = STEPS_PER_PRESS
             f.attrs["dz_press"] = DZ_PRESS
             f.attrs["dz_lift"] = DZ_LIFT
-            f.attrs["ft_calibration_enabled"] = FT_CALIBRATION_ENABLED
-            f.attrs["stretchmagtec_calibration_enabled"] = STRETCHMAGTEC_CALIBRATION_ENABLED
+            # Save boolean attributes as numpy bool_ (matching stable format)
+            f.attrs["ft_calibration_enabled"] = np.bool_(FT_CALIBRATION_ENABLED)
+            f.attrs["stretchmagtec_calibration_enabled"] = np.bool_(STRETCHMAGTEC_CALIBRATION_ENABLED)
             f.attrs["target_freq"] = TARGET_FREQ
             if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
                 f.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
@@ -798,7 +1129,21 @@ if __name__ == '__main__':
                 f.attrs["press_profile"] = str(getattr(config_module, "CURRENT_PRESS_PROFILE"))
             if hasattr(config_module, "CURRENT_PRESS_SETTINGS"):
                 for key, value in getattr(config_module, "CURRENT_PRESS_SETTINGS").items():
-                    f.attrs[f"press_{key}"] = value
+                    # Convert value to HDF5-compatible type
+                    if value is None:
+                        # Skip None values or convert to empty string
+                        continue
+                    elif isinstance(value, (list, dict)):
+                        # Convert complex types to string
+                        f.attrs[f"press_{key}"] = str(value)
+                    elif isinstance(value, bool):
+                        # Convert bool to int (HDF5 doesn't support bool natively)
+                        f.attrs[f"press_{key}"] = int(value)
+                    elif isinstance(value, (int, float, str)):
+                        f.attrs[f"press_{key}"] = value
+                    else:
+                        # Fallback: convert to string
+                        f.attrs[f"press_{key}"] = str(value)
             
             if press_summary_sensors:
                 f.create_dataset(
@@ -830,3 +1175,6 @@ if __name__ == '__main__':
         press_summary_metadata.clear()
         config_module.LAST_OUTPUT_FILE = str(filename)
 
+
+if __name__ == '__main__':
+    main()

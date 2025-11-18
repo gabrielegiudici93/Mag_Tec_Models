@@ -126,14 +126,23 @@ The manufacturer's specifications indicate that the FT-300S is not reliable for 
 \section{Data Acquisition Protocol}
 
 \subsection{Press Grid}
-The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 8}) together with four
-neighbour offsets \(\{\text{NW}, \text{NE}, \text{SE}, \text{SW}\}\), plus the centre. Baseline offsets
+The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 32}) at coordinates
+\[
+    \text{TARGET\_POSITION\_COORDS} = [0.496776, 0.438500, 0.031811] \text{ m},
+\]
+together with four neighbour offsets \(\{\text{NW}, \text{NE}, \text{SE}, \text{SW}\}\), plus the centre. Baseline offsets
 are defined by the constants
 \[
     \text{BASE\_NS\_OFFSET} = 2.5 \text{ mm}, \qquad
     \text{BASE\_EW\_OFFSET} = 5.0 \text{ mm},
 \]
-which correspond to the spacing between neighbouring magnets in the unstretched configuration.
+which correspond to the spacing between neighbouring magnets in the unstretched configuration. The offset directions are:
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{NE (nord-est):} \([-2.5, +5.0, 0]\) mm
+    \item \textbf{NW (nord-ovest):} \([-2.5, -5.0, 0]\) mm
+    \item \textbf{SE (sud-est):} \([+2.5, +5.0, 0]\) mm
+    \item \textbf{SW (sud-ovest):} \([+2.5, -5.0, 0]\) mm
+\end{itemize}
 
 \subsection{Stretch Configurations}
 The skin is tested at three longitudinal stretches (default values):
@@ -155,31 +164,38 @@ horizontal direction). Data for each stretch level are stored in dedicated direc
         \toprule
         Parameter & Value / Description \\
         \midrule
-        Press depth & \SI{5}{\milli\metre} total travel towards the skin (vertical speed \(\approx\SI{0.01}{\metre\per\second}\)). \\
-        Presses per offset & 50 repetitions to characterise variability at each offset. \\
-        Continuous mode & Single motion command to full depth (default profile). \\
-        Stepwise mode & Optional: five \SI{1}{\milli\metre} increments with \SI{1}{\second} dwell per step. \\
+        Press mode & Force-controlled pressing from \SI{0.0}{\newton} to \SI{3.0}{\newton} in \SI{0.1}{\newton} steps. \\
+        Force step delay & \SI{0.0}{\second} (configurable, typically \SI{1.0}{\second} for data collection). \\
+        Force tolerance & \SI{0.01}{\newton} tolerance for reaching target force. \\
+        Presses per offset & 51 press cycles per offset (first press discarded, 50 usable repetitions). \\
+        Movement between offsets & Robot lifts \SI{5}{\milli\metre} before moving horizontally, then lowers \SI{5}{\milli\metre} at target position to avoid sliding on surface. \\
         Dwell after lift & \SI{0.5}{\second} pause before moving to the next offset. \\
         Return-to-centre & After each stretch run the robot reverts to the central pose for re-tensioning. \\
         \bottomrule
     \end{tabular}
 \end{table}
 Operators are prompted before each stretch run to re-adjust the skin tension. Manual
-confirmation is required to proceed.
+confirmation is required to proceed. The force-controlled approach ensures consistent force application
+across all press cycles, with the robot automatically adjusting its position to maintain the target force level.
 
 \subsection{Run Organisation}
 Each acquisition session is stored in its own run directory. The scripts generate
-human-readable labels so repeated experiments stay organised:
+human-readable labels based on the force-controlled parameters:
 \[
 \texttt{data/}\begin{cases}
-    \texttt{2.5mm\_single\_testX/} & \text{single-point runs}\\
-    \texttt{Multiple\_Points/2.5mm\_single\_testX/} & \text{multi-point runs}
+    \texttt{force\_0to3N\_step0.1N\_single\_testX/} & \text{single-point runs}\\
+    \texttt{Multiple\_Points/force\_0to3N\_step0.1N\_single\_testX/} & \text{multi-point runs}
 \end{cases}
 \]
 Within each run directory the three stretch recordings are saved as individual HDF5 files
 (\texttt{\_stretch\_000pct.h5}, \texttt{\_stretch\_010pct.h5}, \texttt{\_stretch\_020pct.h5})
-alongside a `models/` subfolder and a JSON report created by the training pipeline. This layout
-allows multiple datasets to coexist while keeping the associated models and metrics bundled with
+alongside a \texttt{stretch\_XXXpct/} subfolder containing automatically generated plots:
+\begin{itemize}[leftmargin=1.5em]
+    \item \texttt{raw\_data\_offset\_\{center,ne,nw,se,sw\}\_stretch\_XXXpct.png}: Individual plots for each offset showing all press sequences overlapped (Fz, Indentation, Mag Ch8 X/Y/Z).
+    \item \texttt{mean\_std\_offset\_\{center,ne,nw,se,sw\}\_stretch\_XXXpct.png}: Mean and standard deviation plots for each offset (Fz, Indentation, Mag Ch8 X/Y/Z, All Channels).
+\end{itemize}
+A \texttt{models/} subfolder and JSON report are created by the training pipeline. This layout
+allows multiple datasets to coexist while keeping the associated models, metrics, and visualizations bundled with
 their raw data.
 
 \subsection{Calibration and Logging}
@@ -193,7 +209,19 @@ their raw data.
     \item Continuous logging (raw sensor stream and FT data) is saved to the HDF5 datasets
           \texttt{stretchmagtec}, \texttt{forces}, \texttt{positions}, \texttt{timestamps},
           and \texttt{labels}.
-    \item At the end of every press cycle, the script captures a snapshot consisting of:
+    \item Each complete press sequence (from \texttt{\_sequence\_start} to \texttt{\_sequence\_end} labels)
+          is saved as a separate entry in the \texttt{presses} group, containing:
+          \begin{itemize}
+              \item \texttt{forces}: Force/torque data for the entire sequence,
+              \item \texttt{stretchmagtec}: \(15 \times 3\) magnetic channels for all samples,
+              \item \texttt{positions}: Robot position data \([x, y, z]\) for all samples,
+              \item \texttt{indentation}: Relative Z displacement from initial position (negative values indicate indentation),
+              \item \texttt{timestamps}: Normalized timestamps starting from 0 seconds,
+              \item \texttt{labels}: Sequence labels.
+          \end{itemize}
+          Each press entry includes metadata attributes: \texttt{press\_id}, \texttt{offset}, \texttt{stretch\_level},
+          \texttt{initial\_z}, and \texttt{max\_indentation}.
+    \item At the end of every press cycle, the script also captures a snapshot consisting of:
           \begin{itemize}
               \item \(15 \times 3\) magnetic channels,
               \item \(3\) force components (Fx, Fy, Fz) plus torques,
@@ -909,4 +937,32 @@ We thank the MagTec team for sensor fabrication, data collection, and feedback o
 analysis pipeline.
 
 \end{document}
+
+             overlapping stretched poses.}
+    \label{tab:sim-offset}
+    \begin{tabular}{@{}lcc@{}}
+        \toprule
+        Model & Samples & Accuracy \\
+        \midrule
+        stretch\_000pct position classifier & 594 & 1.000 \\
+        stretch\_010pct position classifier & 594 & 1.000 \\
+        stretch\_020pct position classifier & 594 & 1.000 \\
+        pooled position classifier & 1782 & 0.996 \\
+        pooled stretch classifier & 1782 & 1.000 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsubsection{Where to find the artefacts}
+The training command above outputs all joblib models inside
+\texttt{data/Imported/simulation\_points\_test1/models/}, while the accompanying JSON metrics are saved as
+\texttt{simulation\_points\_test1\_metrics.json} in the same folder. These files mirror the structure used
+for the on-robot runs so that evaluation utilities and GUIs can load them without special cases.
+
+\section*{Acknowledgements}
+We thank the MagTec team for sensor fabrication, data collection, and feedback on the
+analysis pipeline.
+
+\end{document}
+
 

@@ -45,7 +45,7 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # =============================================================================
 TARGET_POSITION_ID = 32
 TARGET_OFFSETS = ['center', 'nw', 'ne', 'se', 'sw']
-TARGET_POSITION_COORDS = [0.493776, 0.440500, 0.031311]
+TARGET_POSITION_COORDS = [0.496776, 0.438500, 0.031811]  # Corrected X, Y coordinates; Z increased by 0.5mm (0.0005m)
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
 BASE_EW_OFFSET = 0.0050  # 5.0 mm
@@ -63,23 +63,32 @@ BASE_OFFSETS = {
 }
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [0.00, 0.10, 0.20]
+STRETCH_LEVELS = [0.00]
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 PROMPT_FOR_RUN_LABEL = False  # Run label generated automatically
 
-# Pressing profile configuration (stepwise: 0.5 mm × 5 steps = 2.5 mm)
+# Force-controlled pressing configuration
+FORCE_CONTROLLED_PRESS = True  # Use force-controlled pressing
+FORCE_MIN = 0.0  # Start from 0.0N
+FORCE_MAX = 3.0  # Up to 3.0N
+FORCE_STEP_SIZE = 0.1  # Step size 0.1N
+FORCE_STEP_DELAY = 0.01  # Wait time at each force step (0.0s for fast debugging, typically 1.0s for data collection)
+FORCE_TOLERANCE = 0.01  # Tolerance for reaching target force
+
+# Pressing profile configuration (legacy - used only if FORCE_CONTROLLED_PRESS is False)
 PRESS_DEPTH_MM = 2.5            # Total press depth (mm)
 PRESS_STEP_MM = PRESS_DEPTH_MM  # Single indentation (no intermediate steps)
 STEPWISE_MODE = False           # Continuous press, single movement
 PRESS_HOLD_S = 1.0              # Hold at maximum indentation before lift
 DWELL_AFTER_LIFT_S = 0.5        # Pause after lift (seconds)
-PRESSES_PER_POINT = 50          # Number of press cycles per offset
+PRESSES_PER_POINT = 31           # Number of press cycles per offset (discard first, keep 50)
 
 # GUI flag (set False to disable visualization)
 ENABLE_GUI = True
 
 # Base references for restoring configuration after the test
-BASE_DATA_DIR = Path(config.DATA_DIR)
+BASE_DATA_DIR = Path(config.DATA_DIR) / "Single_Point"
+BASE_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Apply single-point selection defaults
 config.SELECTED_POSITIONS = [TARGET_POSITION_ID]
@@ -95,9 +104,12 @@ print(f"Offsets under test: {', '.join(TARGET_OFFSETS)}")
 print(f"Base coordinates: {TARGET_POSITION_COORDS}")
 print(f"Baseline offset distances → NS: {BASE_NS_OFFSET*1000:.1f} mm, EW: {BASE_EW_OFFSET*1000:.1f} mm")
 print(f"Stretch levels configured: {', '.join(f'{int(s*100)}%' for s in STRETCH_LEVELS)}")
-print(f"Press strategy: single indentation {PRESS_DEPTH_MM:.1f} mm (no intermediate steps)")
-print(f"Hold before lift: {PRESS_HOLD_S:.1f}s  |  Dwell after lift: {DWELL_AFTER_LIFT_S:.1f}s")
-print(f"Presses per point: {PRESSES_PER_POINT}")
+if FORCE_CONTROLLED_PRESS:
+    print(f"Press profile: Force-controlled {FORCE_MIN} to {FORCE_MAX}N (step: {FORCE_STEP_SIZE}N, wait: {FORCE_STEP_DELAY}s)")
+else:
+    print(f"Press strategy: single indentation {PRESS_DEPTH_MM:.1f} mm (no intermediate steps)")
+    print(f"Hold before lift: {PRESS_HOLD_S:.1f}s  |  Dwell after lift: {DWELL_AFTER_LIFT_S:.1f}s")
+print(f"Presses per offset: {PRESSES_PER_POINT}")
 print("=" * 70 + "\n")
 
 # =============================================================================
@@ -293,8 +305,12 @@ def build_offsets_for_stretch(stretch_value: float) -> dict:
 
 
 def generate_run_name() -> Tuple[str, Path]:
-    indent_tag = f"{PRESS_DEPTH_MM:.1f}mm_single"
-    base_name = f"{indent_tag}_test"
+    if FORCE_CONTROLLED_PRESS:
+        # Use force-controlled parameters for naming
+        base_name = f"force_{FORCE_MIN}to{FORCE_MAX}N_step{FORCE_STEP_SIZE}N_single"
+    else:
+        indent_tag = f"{PRESS_DEPTH_MM:.1f}mm_single"
+        base_name = f"{indent_tag}_test"
 
     data_root = BASE_DATA_DIR
     data_root.mkdir(parents=True, exist_ok=True)
@@ -309,7 +325,7 @@ def generate_run_name() -> Tuple[str, Path]:
         except ValueError:
             continue
 
-    run_label = f"{base_name}{run_id}"
+    run_label = f"{base_name}_test{run_id}"
     return run_label, data_root / run_label
 
 
@@ -427,7 +443,16 @@ def configure_for_stretch(stretch_value: float, stretch_label: str, run_root: Pa
     config.DZ_LIFT = PRESS_DEPTH_MM / 1000.0
     config.PRESS_DELAY = PRESS_HOLD_S
     config.LIFT_DELAY = DWELL_AFTER_LIFT_S
-    press_profile = "single_press"
+    
+    # Configure force-controlled pressing
+    config.FORCE_CONTROLLED_PRESS = FORCE_CONTROLLED_PRESS
+    config.FORCE_MIN = FORCE_MIN
+    config.FORCE_MAX = FORCE_MAX
+    config.FORCE_STEP_SIZE = FORCE_STEP_SIZE
+    config.FORCE_STEP_DELAY = FORCE_STEP_DELAY
+    config.FORCE_TOLERANCE = FORCE_TOLERANCE
+    
+    press_profile = "force_controlled" if FORCE_CONTROLLED_PRESS else "single_press"
 
     config.DATA_DIR = run_root
 
@@ -435,12 +460,19 @@ def configure_for_stretch(stretch_value: float, stretch_label: str, run_root: Pa
     config.CURRENT_STRETCH_VALUE = stretch_value
     config.CURRENT_STRETCH_LABEL = stretch_label
     config.CURRENT_PRESS_PROFILE = press_profile
+    # Store press settings - matching exact format from stable dataset
     config.CURRENT_PRESS_SETTINGS = {
-        "press_depth_mm": PRESS_DEPTH_MM,
-        "press_step_mm": PRESS_STEP_MM,
-        "stepwise": bool(STEPWISE_MODE),
-        "step_hold_s": PRESS_HOLD_S if STEPWISE_MODE else PRESS_HOLD_S,
+        "force_min": FORCE_MIN if FORCE_CONTROLLED_PRESS else None,
+        "force_max": FORCE_MAX if FORCE_CONTROLLED_PRESS else None,
+        "force_step_size": FORCE_STEP_SIZE if FORCE_CONTROLLED_PRESS else None,
+        "force_step_delay": FORCE_STEP_DELAY if FORCE_CONTROLLED_PRESS else None,
+        "force_tolerance": FORCE_TOLERANCE if FORCE_CONTROLLED_PRESS else None,
         "presses_per_point": PRESSES_PER_POINT,
+        # Legacy settings (only if not force-controlled)
+        "press_depth_mm": PRESS_DEPTH_MM if not FORCE_CONTROLLED_PRESS else None,
+        "press_step_mm": PRESS_STEP_MM if not FORCE_CONTROLLED_PRESS else None,
+        "stepwise": bool(STEPWISE_MODE) if not FORCE_CONTROLLED_PRESS else None,
+        "step_hold_s": PRESS_HOLD_S if STEPWISE_MODE and not FORCE_CONTROLLED_PRESS else None,
     }
     config.CURRENT_STRETCH_INDEX = stretch_idx
     config.CURRENT_OUTPUT_PREFIX = f"{run_name}_{stretch_label}"
@@ -659,7 +691,9 @@ def main():
         for idx, stretch_value in enumerate(STRETCH_LEVELS):
             stretch_label = format_stretch_label(stretch_value)
             horizontal_offset_mm = BASE_EW_OFFSET * (1.0 + stretch_value) * 1000.0
-            if STEPWISE_MODE:
+            if FORCE_CONTROLLED_PRESS:
+                profile_desc = f"Force-controlled {FORCE_MIN} to {FORCE_MAX}N (step: {FORCE_STEP_SIZE}N, wait: {FORCE_STEP_DELAY}s)"
+            elif STEPWISE_MODE:
                 steps = max(1, int(round(PRESS_DEPTH_MM / PRESS_STEP_MM)))
                 profile_desc = f"Stepwise {PRESS_STEP_MM:.2f} mm × {steps} steps (hold {PRESS_HOLD_S:.1f}s)"
             else:
@@ -684,14 +718,39 @@ def main():
                 path = Path(last_file)
                 collected_files.append(path)
                 print(f"\nCompleted stretch level {stretch_label}. Data stored in {path}")
+                
+                # Generate plots for this stretch level
+                try:
+                    from training.plot_raw_data import main as plot_main
+                    import sys
+                    import argparse
+                    
+                    stretch_output_dir = run_root / stretch_label
+                    stretch_output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save original sys.argv
+                    original_argv = sys.argv.copy()
+                    
+                    # Set up sys.argv for argparse in plot_main
+                    sys.argv = [
+                        'plot_raw_data.py',
+                        '--h5-file', str(path),
+                        '--output-dir', str(stretch_output_dir)
+                    ]
+                    
+                    print(f"\nGenerating plots for {stretch_label}...")
+                    plot_main()
+                    print(f"Plots saved to {stretch_output_dir}")
+                    
+                    # Restore original sys.argv
+                    sys.argv = original_argv
+                except Exception as e:
+                    print(f"⚠️  Warning: Could not generate plots for {stretch_label}: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 print(f"\nCompleted stretch level {stretch_label}. (No output file reported)")
             time.sleep(2.0)
-
-        if collected_files:
-            run_training_pipeline(run_root, run_label)
-        else:
-            print("\nNo data files were collected; skipping training pipeline.")
 
     finally:
         restore_original_config(original_state)
@@ -701,4 +760,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

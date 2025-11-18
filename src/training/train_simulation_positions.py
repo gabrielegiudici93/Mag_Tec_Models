@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Train force and location models directly from simulation datasets with multiple probe points.
+Uses the SAME training functions as train_single_point_models.py for consistency.
 
 Expected HDF5 structure (per stretch file):
     MagneticField   [samples, 15, 3]   raw Bx/By/Bz readings
@@ -10,6 +11,8 @@ Expected HDF5 structure (per stretch file):
 The script:
   * infers stretch labels from filenames or attributes,
   * derives contact-location labels from the indenter XY coordinates,
+  * converts continuous data into sequences (similar to real data),
+  * duplicates sequences to match real data count (if needed),
   * trains per-stretch force regressors (if Fz is provided),
   * trains per-stretch location classifiers,
   * trains pooled stretch and location classifiers,
@@ -20,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -32,9 +34,6 @@ import shutil
 import h5py
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, mean_squared_error
-from sklearn.model_selection import train_test_split
 
 CURRENT_DIR = Path(__file__).resolve().parent
 SRC_ROOT = CURRENT_DIR.parent
@@ -44,12 +43,24 @@ if str(SRC_ROOT) not in sys.path:
 
 from franka_controller.config import DATA_DIR  # noqa: E402
 
+# Import training functions from train_single_point_models
+from training.train_single_point_models import (  # noqa: E402
+    create_model,
+    filter_high_displacement,
+    normalize_fz_to_range,
+    prepare_training_data,
+    train_models_for_stretch,
+    train_combined_model,
+    balance_sequences,
+    remove_outliers,
+)
+
 
 def infer_stretch_label(path: Path, attrs: Dict[str, str]) -> str:
     if "stretch" in attrs:
         try:
             value = float(attrs["stretch"])
-            return f"stretch_{int(round(value)):03d}pct"
+            return f"{int(round(value)):03d}pct"
         except (TypeError, ValueError):
             pass
 
@@ -60,8 +71,8 @@ def infer_stretch_label(path: Path, attrs: Dict[str, str]) -> str:
             value = int(digits[-3:])  # assume the last digits encode the stretch %
         except ValueError:
             value = int(digits)
-        return f"stretch_{value:03d}pct"
-    return f"stretch_{hash(name) & 0xFFFF:04x}"
+        return f"{value:03d}pct"
+    return f"{hash(name) & 0xFFFF:04x}pct"
 
 
 def position_key(xy: np.ndarray, resolution_mm: float = 0.1) -> Tuple[str, Tuple[float, float]]:
@@ -123,10 +134,10 @@ def load_simulation_file(path: Path) -> Dict[str, np.ndarray]:
     
     Returns:
         Dictionary with:
-        - "features": Flattened magnetic data [samples, 45] (15×3 = 45 features)
+        - "magnetic": Magnetic data [samples, 15, 3]
         - "forces": Force data [samples, 3] or None
         - "indenter": Position data [samples, 3] or None
-        - "stretch_label": Inferred stretch level (e.g., "stretch_010pct")
+        - "stretch_label": Inferred stretch level (e.g., "010pct")
     """
     with h5py.File(path, "r") as f:
         attrs = dict(f.attrs)
@@ -145,51 +156,203 @@ def load_simulation_file(path: Path) -> Dict[str, np.ndarray]:
     samples = magnetic.shape[0]
     stretch_label = infer_stretch_label(path, attrs)
     
-    # Flatten magnetic data: [samples, 15, 3] → [samples, 45]
-    # This creates one feature vector per sample (45 features = 15 sensors × 3 channels)
     data = {
-        "features": magnetic.reshape(samples, -1),  # Flatten to [samples, 45]
-        "forces": forces,                            # [samples, 3] or None
-        "indenter": indenter,                        # [samples, 3] or None
-        "stretch_label": stretch_label,              # e.g., "stretch_010pct"
+        "magnetic": magnetic,          # [samples, 15, 3]
+        "forces": forces,             # [samples, 3] or None
+        "indenter": indenter,          # [samples, 3] or None
+        "stretch_label": stretch_label, # e.g., "010pct"
     }
     return data
 
 
-def train_force_regressor(X: np.ndarray, y: np.ndarray) -> Tuple[RandomForestRegressor, Dict[str, float]]:
-    X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=0.7, random_state=42)
-    model = RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    rmse = float(math.sqrt(mean_squared_error(y_test, y_pred)))
-    std = float(np.std(y_test - y_pred))
-    return model, {"rmse": rmse, "std_dev": std, "samples": int(len(y))}
+def convert_to_sequences(
+    magnetic: np.ndarray,
+    forces: np.ndarray | None,
+    indenter: np.ndarray | None,
+    position_labels: List[str],
+    stretch_label: str,
+) -> List[Dict]:
+    """
+    Convert continuous simulation data into sequences (similar to real data structure).
+    
+    Groups samples by position label to create sequences.
+    Each sequence represents one "press" at a specific position.
+    
+    Args:
+        magnetic: [samples, 15, 3] magnetic field data
+        forces: [samples, 3] or None, force data
+        indenter: [samples, 3] or None, indenter position
+        position_labels: List of position labels (one per sample)
+        stretch_label: Stretch level label (e.g., "010pct")
+    
+    Returns:
+        List of sequence dictionaries, each with:
+        - 'stretchmagtec': [samples_in_seq, 15, 3]
+        - 'forces': [samples_in_seq, 3] or None
+        - 'fz': [samples_in_seq] (extracted from forces)
+        - 'offset': position label (e.g., "center", "ne", etc.)
+        - 'stretch': stretch_label
+    """
+    sequences = []
+    
+    # Group samples by position
+    position_groups = defaultdict(list)
+    for i, pos_label in enumerate(position_labels):
+        position_groups[pos_label].append(i)
+    
+    # Map position labels to offset names based on RELATIVE position to center
+    # Find center position (closest to origin or most common)
+    center_pos = None
+    center_label = None
+    min_dist_to_origin = float('inf')
+    
+    for pos_label, indices in position_groups.items():
+        # Extract coordinates from label
+        import re
+        match = re.match(r'x([+-]?\d+\.?\d*)mm_y([+-]?\d+\.?\d*)mm', pos_label)
+        if match:
+            x_mm = float(match.group(1))
+            y_mm = float(match.group(2))
+            dist = np.sqrt(x_mm**2 + y_mm**2)
+            if dist < min_dist_to_origin:
+                min_dist_to_origin = dist
+                center_pos = (x_mm, y_mm)
+                center_label = pos_label
+    
+    # If no center found, use the position with most samples
+    if center_pos is None:
+        center_label = max(position_groups.items(), key=lambda x: len(x[1]))[0]
+        match = re.match(r'x([+-]?\d+\.?\d*)mm_y([+-]?\d+\.?\d*)mm', center_label)
+        if match:
+            center_pos = (float(match.group(1)), float(match.group(2)))
+    
+    # Map other positions relative to center
+    offset_map = {center_label: "center"}
+    
+    for pos_label, indices in position_groups.items():
+        if pos_label == center_label:
+            continue
+        
+        # Extract coordinates from label
+        match = re.match(r'x([+-]?\d+\.?\d*)mm_y([+-]?\d+\.?\d*)mm', pos_label)
+        if match:
+            x_mm = float(match.group(1))
+            y_mm = float(match.group(2))
+            
+            # Calculate relative position to center
+            dx = x_mm - center_pos[0]
+            dy = y_mm - center_pos[1]
+            
+            # Map to offset based on relative position
+            # Real data: ne=[-2.5, +5.0] (X=-2.5mm nord, Y=+5.0mm est), nw=[-2.5, -5.0], se=[+2.5, +5.0], sw=[+2.5, -5.0]
+            # So: ne has dx<0, dy>0; nw has dx<0, dy<0; se has dx>0, dy>0; sw has dx>0, dy<0
+            if dx < 0 and dy > 0:
+                offset_map[pos_label] = "ne"  # Northeast (negative X, positive Y)
+            elif dx < 0 and dy < 0:
+                offset_map[pos_label] = "nw"  # Northwest (negative X, negative Y)
+            elif dx > 0 and dy > 0:
+                offset_map[pos_label] = "se"  # Southeast (positive X, positive Y)
+            elif dx > 0 and dy < 0:
+                offset_map[pos_label] = "sw"  # Southwest (positive X, negative Y)
+            else:
+                # If on axis, use closest match based on dominant direction
+                if abs(dx) > abs(dy):
+                    offset_map[pos_label] = "se" if dx > 0 else "ne"
+                else:
+                    offset_map[pos_label] = "ne" if dy > 0 else "nw"
+    
+    for pos_label, indices in position_groups.items():
+        # Extract sequence data
+        seq_magnetic = magnetic[indices]  # [samples_in_seq, 15, 3]
+        
+        seq_forces = None
+        seq_fz = None
+        if forces is not None:
+            seq_forces = forces[indices]  # [samples_in_seq, 3]
+            seq_fz = np.abs(seq_forces[:, 2])  # Fz component (use absolute value for training)
+        
+        # Downsample to match real data sequence length (~81 samples average)
+        # Use linear interpolation to downsample if sequence is too long
+        target_length = 81  # Average from real data
+        if len(seq_magnetic) > target_length:
+            # Downsample using linear interpolation
+            if len(seq_magnetic) > 1:
+                # Resample to target_length
+                original_indices = np.linspace(0, len(seq_magnetic) - 1, len(seq_magnetic))
+                target_indices = np.linspace(0, len(seq_magnetic) - 1, target_length)
+                
+                # Interpolate magnetic data
+                seq_magnetic_downsampled = np.zeros((target_length, seq_magnetic.shape[1], seq_magnetic.shape[2]))
+                for sensor in range(seq_magnetic.shape[1]):
+                    for channel in range(seq_magnetic.shape[2]):
+                        seq_magnetic_downsampled[:, sensor, channel] = np.interp(
+                            target_indices, original_indices, seq_magnetic[:, sensor, channel]
+                        )
+                seq_magnetic = seq_magnetic_downsampled
+                
+                # Interpolate forces if available
+                if seq_forces is not None:
+                    seq_forces_downsampled = np.zeros((target_length, seq_forces.shape[1]))
+                    for channel in range(seq_forces.shape[1]):
+                        seq_forces_downsampled[:, channel] = np.interp(
+                            target_indices, original_indices, seq_forces[:, channel]
+                        )
+                    seq_forces = seq_forces_downsampled
+                    seq_fz = np.abs(seq_forces[:, 2])  # Use absolute value for training
+        
+        # Map position to offset name
+        offset = offset_map.get(pos_label, "unknown")
+        
+        # Calculate duration (number of samples, assuming ~100Hz sampling rate)
+        duration = len(seq_magnetic) / 100.0  # Approximate duration in seconds
+        
+        # Calculate required fields for outlier removal
+        fz_max = float(np.max(seq_fz)) if seq_fz is not None and len(seq_fz) > 0 else 0.0
+        num_samples = len(seq_magnetic)
+        
+        sequence = {
+            'stretchmagtec': seq_magnetic,
+            'forces': seq_forces,
+            'fz': seq_fz if seq_fz is not None else np.zeros(len(seq_magnetic)),
+            'offset': offset,
+            'stretch': stretch_label,
+            'duration': duration,  # Required for outlier removal
+            'fz_max': fz_max,      # Required for outlier removal
+            'num_samples': num_samples,  # Required for outlier removal
+        }
+        sequences.append(sequence)
+    
+    return sequences
 
 
-def train_classifier(
-    X: np.ndarray,
-    y: np.ndarray,
-    label: str,
-    class_names: List[str],
-) -> Tuple[RandomForestClassifier, Dict[str, object]]:
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, train_size=0.7, random_state=42, stratify=y if len(np.unique(y)) > 1 else None
-    )
-    model = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    acc = float(accuracy_score(y_test, y_pred))
-    report = classification_report(y_test, y_pred, labels=class_names, zero_division=0)
-    cm = confusion_matrix(y_test, y_pred, labels=class_names).tolist()
-    metrics = {
-        "label": label,
-        "samples": int(len(y)),
-        "accuracy": acc,
-        "report": report,
-        "confusion_matrix": cm,
-        "classes": class_names,
-    }
-    return model, metrics
+def duplicate_sequences(sequences: List[Dict], target_count: int) -> List[Dict]:
+    """
+    Duplicate sequences to reach target count.
+    
+    Args:
+        sequences: List of sequence dictionaries
+        target_count: Target number of sequences
+    
+    Returns:
+        List of sequences (duplicated if needed)
+    """
+    import copy
+    
+    if len(sequences) >= target_count:
+        return sequences[:target_count]
+    
+    # Duplicate sequences to reach target count (deep copy to avoid shared references)
+    duplicated = []
+    while len(duplicated) < target_count:
+        # Append sequences in order until we reach target
+        remaining = target_count - len(duplicated)
+        to_add = min(remaining, len(sequences))
+        for seq in sequences[:to_add]:
+            # Deep copy the sequence dictionary
+            seq_copy = copy.deepcopy(seq)
+            duplicated.append(seq_copy)
+    
+    return duplicated[:target_count]
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,14 +363,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-label", type=str, default=None, help="Name for the output directory.")
     parser.add_argument("--output-dir", type=Path, default=None, help="Destination root for artefacts.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
-    parser.add_argument("--normalize", action="store_true", help="Use magnitude-normalised features.")
+    parser.add_argument("--target-sequences", type=int, default=None, help="Target number of sequences per stretch (duplicate if needed).")
+    parser.add_argument("--use-gpu", action="store_true", help="Use GPU acceleration if available.")
+    parser.add_argument("--z-threshold", type=float, default=3.0, help="Z-score threshold for outlier removal.")
     return parser.parse_args()
-
-
-def normalise_features(features: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(features, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    return features / norms
 
 
 def main() -> None:
@@ -216,12 +375,14 @@ def main() -> None:
     
     1. READ DATA: Load HDF5 files → extract MagneticField, IdenterPosition, forcesTest
     2. DETECT POSITIONS: Round X/Y coordinates to create discrete position labels
-    3. TRAIN MODELS:
-       - Per-stretch position classifiers (one per stretch level)
+    3. CONVERT TO SEQUENCES: Group samples by position to create sequences
+    4. DUPLICATE SEQUENCES: If needed, duplicate to match real data count
+    5. TRAIN MODELS: Use same functions as train_single_point_models.py
        - Per-stretch force regressors (if forcesTest available)
-       - Pooled stretch classifier (predicts stretch from magnetic field)
-       - Pooled position classifier (works across all stretches)
-    4. SAVE: Models and metrics JSON to data/Imported/<run_label>/
+       - Per-stretch offset classifiers
+       - Pooled stretch classifier
+       - Pooled offset classifier
+    6. SAVE: Models and metrics JSON to data/Imported/<run_label>/
     """
     args = parse_args()
     run_label = args.run_label or f"simulation_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -237,49 +398,26 @@ def main() -> None:
     models_dir = dest_root / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Storage for all data (across all stretches)
-    all_features = []      # Magnetic field features [samples, 45]
-    all_stretches = []     # Stretch labels (e.g., "stretch_010pct")
-    all_positions = []     # Position labels (e.g., "x+02.9mm_y+02.0mm")
-    all_forces = []        # Force values Fz
-    position_map = {}      # Maps position labels to (x_mm, y_mm) coordinates
-
-    # Storage per stretch level
-    per_stretch_features = defaultdict(list)   # Features grouped by stretch
-    per_stretch_positions = defaultdict(list)  # Position labels grouped by stretch
-    per_stretch_forces = defaultdict(list)     # Forces grouped by stretch
+    # Storage for sequences by stretch level
+    sequences_by_stretch: Dict[str, List[Dict]] = defaultdict(list)
+    position_map = {}  # Maps position labels to (x_mm, y_mm) coordinates
 
     # ========================================================================
-    # STEP 1: READ ALL HDF5 FILES AND DETECT POSITIONS
+    # STEP 1: READ ALL HDF5 FILES AND CONVERT TO SEQUENCES
     # ========================================================================
     for file_path in args.inputs:
         if not file_path.exists():
             raise FileNotFoundError(file_path)
         data = load_simulation_file(file_path)
-        features = data["features"]
-        if args.normalize:
-            features = normalise_features(features)
-
-        stretch = data["stretch_label"]
+        magnetic = data["magnetic"]
+        forces = data["forces"]
         indenter = data["indenter"]
+        stretch = data["stretch_label"]
+        
         if indenter is None:
             raise RuntimeError(f"{file_path} missing 'IdenterPosition'; cannot derive contact labels.")
 
-        # ========================================================================
-        # DETECT CONTACT POSITIONS FROM INDENTER COORDINATES
-        # ========================================================================
-        # For each sample, we look at where the indenter was (X, Y coordinates)
-        # and round them to create discrete position labels.
-        #
-        # Example workflow:
-        #   Sample 1: indenter = [0.0000, 0.0000] → "x+00.0mm_y+00.0mm" (center)
-        #   Sample 2: indenter = [0.0029, 0.0020] → "x+02.9mm_y+02.0mm" (NE offset)
-        #   Sample 3: indenter = [0.0029, -0.0020] → "x+02.9mm_y-02.0mm" (SE offset)
-        #   Sample 4: indenter = [0.00287, 0.00195] → "x+02.9mm_y+02.0mm" (same as Sample 2!)
-        #
-        # By rounding, samples at "similar" positions get the SAME label.
-        # This automatically groups samples into discrete contact positions.
-        # ========================================================================
+        # Detect contact positions from indenter coordinates
         position_labels = []
         for vec in indenter:  # vec is [X, Y, Z] in metres
             # Extract only X, Y (ignore Z) and create position label
@@ -287,130 +425,255 @@ def main() -> None:
             position_map[label] = canonical_xy  # Store unique positions
             position_labels.append(label)  # One label per sample
 
-        forces = data["forces"]
-        if forces is not None:
-            fz = forces[:, 2]
-        else:
-            fz = None
-
-        all_features.append(features)
-        all_stretches.extend([stretch] * len(features))
-        all_positions.extend(position_labels)
-        if fz is not None:
-            all_forces.append(fz)
-
-        per_stretch_features[stretch].append(features)
-        per_stretch_positions[stretch].extend(position_labels)
-        if fz is not None:
-            per_stretch_forces[stretch].append(fz)
+        # Convert to sequences (group by position)
+        sequences = convert_to_sequences(magnetic, forces, indenter, position_labels, stretch)
+        sequences_by_stretch[stretch].extend(sequences)
 
         # Copy the original file for reference
         target_copy = dest_root / file_path.name
         target_copy.write_bytes(file_path.read_bytes())
 
-    X_all = np.vstack(all_features)
-    stretch_array = np.array(all_stretches)
-    position_array = np.array(all_positions)
-    force_array = np.concatenate(all_forces) if all_forces else None
+    # ========================================================================
+    # STEP 2: DUPLICATE SEQUENCES IF NEEDED
+    # ========================================================================
+    if args.target_sequences is not None:
+        print(f"\n{'='*80}")
+        print("DUPLICATING SEQUENCES")
+        print(f"{'='*80}")
+        for stretch, sequences in sequences_by_stretch.items():
+            original_count = len(sequences)
+            sequences_by_stretch[stretch] = duplicate_sequences(sequences, args.target_sequences)
+            print(f"{stretch}: {original_count} → {len(sequences_by_stretch[stretch])} sequences")
 
+    # ========================================================================
+    # STEP 3: REMOVE OUTLIERS AND BALANCE SEQUENCES
+    # ========================================================================
+    print(f"\n{'='*80}")
+    print("REMOVING OUTLIERS AND BALANCING")
+    print(f"{'='*80}")
+    
+    for stretch in list(sequences_by_stretch.keys()):
+        sequences = sequences_by_stretch[stretch]
+        print(f"\n{stretch}: {len(sequences)} sequences before cleaning")
+        
+        # Remove outliers (returns tuple: (cleaned_sequences, outlier_indices))
+        cleaned_sequences, outlier_indices = remove_outliers(sequences, z_threshold=args.z_threshold)
+        print(f"{stretch}: {len(cleaned_sequences)} sequences after outlier removal (removed {len(outlier_indices)} outliers)")
+        
+        sequences_by_stretch[stretch] = cleaned_sequences
+    
+    # Balance sequences across stretch levels
+    sequences_by_stretch = balance_sequences(sequences_by_stretch)
+    print(f"\nAfter balancing:")
+    for stretch, sequences in sequences_by_stretch.items():
+        print(f"  {stretch}: {len(sequences)} sequences")
+
+    # ========================================================================
+    # STEP 4: TRAIN MODELS (using same functions as real data training)
+    # ========================================================================
+    print(f"\n{'='*80}")
+    print("TRAINING MODELS")
+    print(f"{'='*80}")
+    
+    trained_models = {}
+    gpu_mapping = {'000pct': 0, '010pct': 0, '020pct': 1}
+    
+    # Train per-stretch models
+    for stretch_label, sequences in sequences_by_stretch.items():
+        if len(sequences) == 0:
+            print(f"Skipping {stretch_label}: no sequences")
+            continue
+        
+        gpu_id = gpu_mapping.get(stretch_label, 0)
+        result = train_models_for_stretch(
+            sequences, 
+            stretch_label, 
+            train_ratio=0.7, 
+            use_gpu=args.use_gpu, 
+            gpu_id=gpu_id,
+            fz_target_min=0.0,  # Use absolute values: 0 to 3N
+            fz_target_max=3.0
+        )
+        trained_models[stretch_label] = result
+        
+        # Save models
+        model_name = f"{run_label}_{stretch_label}"
+        if result.get('force_model') is not None:
+            force_path = models_dir / f"{model_name}_force_regressor.joblib"
+            joblib.dump(result['force_model'], force_path)
+            print(f"Saved: {force_path}")
+            
+            # Save scaler and fz_scaler
+            if result.get('scaler') is not None:
+                scaler_path = models_dir / f"{model_name}_scaler.joblib"
+                joblib.dump(result['scaler'], scaler_path)
+                print(f"Saved: {scaler_path}")
+            if result.get('fz_scaler') is not None:
+                fz_scaler_path = models_dir / f"{model_name}_fz_scaler.joblib"
+                joblib.dump(result['fz_scaler'], fz_scaler_path)
+                print(f"Saved: {fz_scaler_path}")
+        if result.get('offset_model') is not None:
+            offset_path = models_dir / f"{model_name}_offset_classifier.joblib"
+            joblib.dump(result['offset_model'], offset_path)
+            print(f"Saved: {offset_path}")
+
+    # Train combined model
+    if len(sequences_by_stretch) > 1:
+        print(f"\n{'='*80}")
+        print("TRAINING COMBINED MODEL")
+        print(f"{'='*80}")
+        combined_result = train_combined_model(
+            sequences_by_stretch, 
+            train_ratio=0.7, 
+            use_gpu=args.use_gpu,
+            fz_target_min=0.0,  # Use absolute values: 0 to 3N
+            fz_target_max=3.0
+        )
+        trained_models['combined'] = combined_result
+        
+        # Save combined models
+        model_name = f"{run_label}_combined"
+        if combined_result.get('force_model') is not None:
+            force_path = models_dir / f"{model_name}_force_regressor.joblib"
+            joblib.dump(combined_result['force_model'], force_path)
+            print(f"Saved: {force_path}")
+            
+            # Save scaler and fz_scaler
+            if combined_result.get('scaler') is not None:
+                scaler_path = models_dir / f"{model_name}_scaler.joblib"
+                joblib.dump(combined_result['scaler'], scaler_path)
+                print(f"Saved: {scaler_path}")
+            if combined_result.get('fz_scaler') is not None:
+                fz_scaler_path = models_dir / f"{model_name}_fz_scaler.joblib"
+                joblib.dump(combined_result['fz_scaler'], fz_scaler_path)
+                print(f"Saved: {fz_scaler_path}")
+        if combined_result.get('offset_model') is not None:
+            offset_path = models_dir / f"{model_name}_offset_classifier.joblib"
+            joblib.dump(combined_result['offset_model'], offset_path)
+            print(f"Saved: {offset_path}")
+        if combined_result.get('stretch_model') is not None:
+            stretch_path = models_dir / f"{model_name}_stretch_classifier.joblib"
+            joblib.dump(combined_result['stretch_model'], stretch_path)
+            print(f"Saved: {stretch_path}")
+
+    # ========================================================================
+    # STEP 5: PRINT TRAINING SUMMARY (identical to physical model)
+    # ========================================================================
+    print("\n" + "="*100)
+    print("TRAINING SUMMARY")
+    print("="*100)
+    print(f"{'Model':<15} {'Sequences':<12} {'Train Seq':<12} {'Test Seq':<12} {'Samples':<12} {'Train Samples':<15} {'Test Samples':<15} {'RMSE':<10} {'Offset Acc':<12} {'Fz Range':<15}")
+    print("-"*100)
+    
+    for model_name, result in trained_models.items():
+        fz_min = result.get('fz_min_actual', np.nan)
+        fz_max = result.get('fz_max_actual', np.nan)
+        fz_range_str = f"[{fz_min:.2f},{fz_max:.2f}]" if not np.isnan(fz_min) and not np.isnan(fz_max) else "N/A"
+        print(f"{model_name:<15} {result['n_sequences']:<12} {result['n_train_sequences']:<12} "
+              f"{result['n_test_sequences']:<12} {result['n_samples']:<12} "
+              f"{result['n_train_samples']:<15} {result['n_test_samples']:<15} "
+              f"{result['force_rmse']:<10.4f} {result['offset_accuracy']:<12.4f} {fz_range_str:<15}")
+    
+    print("="*100)
+    print("\nForce Range Details:")
+    for model_name, result in trained_models.items():
+        fz_min = result.get('fz_min_actual', np.nan)
+        fz_max = result.get('fz_max_actual', np.nan)
+        fz_train_min = result.get('fz_train_min', np.nan)
+        fz_train_max = result.get('fz_train_max', np.nan)
+        fz_test_min = result.get('fz_test_min', np.nan)
+        fz_test_max = result.get('fz_test_max', np.nan)
+        if not np.isnan(fz_min):
+            print(f"  {model_name}:")
+            print(f"    Overall range: [{fz_min:.3f}, {fz_max:.3f}] N")
+            print(f"    Train range: [{fz_train_min:.3f}, {fz_train_max:.3f}] N")
+            print(f"    Test range: [{fz_test_min:.3f}, {fz_test_max:.3f}] N")
+    print("="*100)
+
+    # ========================================================================
+    # STEP 6: PREPARE METRICS JSON (compatible format)
+    # ========================================================================
+    print(f"\n{'='*80}")
+    print("PREPARING METRICS JSON")
+    print(f"{'='*80}")
+    
+    force_results = []
+    offset_results = []
+    
+    for stretch_label in ['000pct', '010pct', '020pct']:
+        if stretch_label in trained_models:
+            result = trained_models[stretch_label]
+            force_results.append({
+                'stretch_label': f'stretch_{stretch_label}',
+                'samples': result['n_samples'],
+                'rmse': result['force_rmse'],
+                'std_dev': result['force_std_dev'],
+                'fz_min_actual': result.get('fz_min_actual', np.nan),
+                'fz_max_actual': result.get('fz_max_actual', np.nan),
+            })
+            offset_results.append({
+                'stretch_label': f'stretch_{stretch_label}',
+                'samples': result['n_samples'],
+                'accuracy': result['offset_accuracy'],
+            })
+    
+    # Combined metrics
+    combined_force_metrics = {}
+    combined_offset_metrics = {}
+    combined_stretch_metrics = {}
+    if 'combined' in trained_models:
+        combined_result = trained_models['combined']
+        combined_force_metrics = {
+            'stretch_label': 'combined',
+            'samples': combined_result.get('n_samples', 0),
+            'rmse': combined_result.get('force_rmse', np.nan),
+            'std_dev': combined_result.get('force_std_dev', np.nan),
+        }
+        combined_offset_metrics = {
+            'stretch_label': 'combined',
+            'samples': combined_result.get('n_samples', 0),
+            'accuracy': combined_result.get('offset_accuracy', 0.0),
+        }
+        combined_stretch_metrics = {
+            'stretch_label': 'combined',
+            'samples': combined_result.get('n_samples', 0),
+            'accuracy': combined_result.get('stretch_accuracy', 0.0),
+        }
+    
+    # Custom JSON encoder
+    def json_encoder(obj):
+        if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
+            return None
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return str(obj)
+    
     metrics_payload = {
-        "config": {
-            "normalized_features": bool(args.normalize),
-            "positions_detected": position_map,
+        'force_mapping_per_stretch_full': force_results,
+        'force_mapping_combined_full': combined_force_metrics,
+        'offset_classification_per_stretch_full': offset_results,
+        'offset_classification_combined_full': combined_offset_metrics,
+        'stretch_classification_combined_full': combined_stretch_metrics,
+        'config': {
+            'positions_detected': position_map,
+            'target_sequences': args.target_sequences,
+            'use_gpu': args.use_gpu,
+            'z_threshold': args.z_threshold,
         },
-        "per_stretch": {},
-        "pooled": {},
-        "notes": [],
     }
-
-    # ========================================================================
-    # TRAIN PER-STRETCH MODELS
-    # ========================================================================
-    # For each stretch level (0%, 10%, 20%), train separate models:
-    # 1. Position classifier: Predicts which position was pressed (center, NE, SE, etc.)
-    # 2. Force regressor: Predicts applied force Fz
-    # ========================================================================
-    for stretch, feature_blocks in per_stretch_features.items():
-        X_stretch = np.vstack(feature_blocks)  # All magnetic features for this stretch
-        y_pos = np.array(per_stretch_positions[stretch])  # Position labels for this stretch
-        stretch_metrics = {}
-
-        # Check how many unique positions we detected for this stretch
-        unique_positions = np.unique(y_pos)
-        if len(unique_positions) > 1:
-            # Train position classifier: magnetic features → position label
-            # Example: If we have 5 positions (center + 4 offsets), this learns to
-            # distinguish between them using the magnetic field patterns
-            clf, clf_metrics = train_classifier(X_stretch, y_pos, stretch, unique_positions.tolist())
-            joblib.dump(clf, models_dir / f"{run_label}_{stretch}_position_classifier.joblib")
-            stretch_metrics["position_classifier"] = clf_metrics
-        else:
-            # Only one position detected → can't train a classifier
-            metrics_payload["notes"].append(
-                f"Stretch {stretch}: only one contact position; skipping location classifier."
-            )
-
-        if stretch in per_stretch_forces:
-            y_force = np.concatenate(per_stretch_forces[stretch])
-            if len(np.unique(y_force)) > 1:
-                reg, reg_metrics = train_force_regressor(X_stretch, y_force)
-                joblib.dump(reg, models_dir / f"{run_label}_{stretch}_force_regressor.joblib")
-                stretch_metrics["force_regressor"] = reg_metrics
-            else:
-                metrics_payload["notes"].append(
-                    f"Stretch {stretch}: constant Fz signal; skipping force regressor."
-                )
-
-        metrics_payload["per_stretch"][stretch] = stretch_metrics
-
-    # Pooled stretch classifier
-    if len(np.unique(stretch_array)) > 1:
-        stretch_clf, stretch_metrics = train_classifier(
-            X_all, stretch_array, "stretch_classifier", np.unique(stretch_array).tolist()
-        )
-        joblib.dump(stretch_clf, models_dir / f"{run_label}_stretch_classifier.joblib")
-        metrics_payload["pooled"]["stretch_classifier"] = stretch_metrics
-
-    # Pooled position classifier (using stretch + position)
-    if len(np.unique(position_array)) > 1:
-        pooled_clf, pooled_metrics = train_classifier(
-            X_all, position_array, "pooled_position_classifier", np.unique(position_array).tolist()
-        )
-        joblib.dump(pooled_clf, models_dir / f"{run_label}_position_classifier.joblib")
-        metrics_payload["pooled"]["position_classifier"] = pooled_metrics
-    else:
-        metrics_payload["notes"].append("Only one unique contact position detected overall; skipping pooled classifier.")
-
-    # Force regressor on pooled data
-    if force_array is not None and len(np.unique(force_array)) > 1:
-        pooled_reg, pooled_reg_metrics = train_force_regressor(X_all, force_array)
-        joblib.dump(pooled_reg, models_dir / f"{run_label}_force_regressor.joblib")
-        metrics_payload["pooled"]["force_regressor"] = pooled_reg_metrics
-    else:
-        metrics_payload["notes"].append("Not enough force variation in pooled data; skipping pooled force regressor.")
-
-    # Persist metrics
+    
     metrics_path = dest_root / f"{run_label}_metrics.json"
     with metrics_path.open("w", encoding="utf-8") as fp:
-        json.dump(metrics_payload, fp, indent=2)
+        json.dump(metrics_payload, fp, indent=2, default=json_encoder)
 
-    print(f"Training complete. Metrics saved to {metrics_path}")
-    print(f"Models stored in {models_dir}")
+    print("Training complete!")
+    print(f"Models saved to: {models_dir}")
+    print(f"Metrics report saved to: {metrics_path}")
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-

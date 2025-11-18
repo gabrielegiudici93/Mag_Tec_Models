@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -73,41 +74,143 @@ CENTRAL_SENSOR_INDICES = [6, 7, 8]  # Sensors 7, 8, 9 (1-based): top, center, bo
 # ---------------------------------------------------------------------------
 
 
-def load_press_summaries(h5_path: Path) -> pd.DataFrame:
-    """Load per-press summaries from a single HDF5 file."""
+def load_continuous_sequences(h5_path: Path) -> pd.DataFrame:
+    """Load full continuous sequences from a single HDF5 file.
+    
+    This function loads the complete time-series data (stretchmagtec, forces, labels).
+    Supports both new format (presses group with separate entries) and old format (continuous data).
+    """
     records: List[Dict] = []
 
     with h5py.File(h5_path, "r") as hf:
-        if "press_summaries/sensors" not in hf:
-            return pd.DataFrame()
+        # Try to get stretch label from file attributes or metadata
+        stretch_label = hf.attrs.get("stretch_label", "")
+        stretch_value = hf.attrs.get("stretch_level", np.nan)
+        if not stretch_label:
+            # Try to infer from filename or parent directory
+            if "stretch_" in h5_path.name:
+                stretch_label = h5_path.name.split("stretch_")[1].split(".")[0]
+            elif h5_path.parent.name.startswith("stretch_"):
+                stretch_label = h5_path.parent.name
+            else:
+                stretch_label = "unknown"
+        
+        # Check if new format with presses group exists
+        if "presses" in hf:
+            # New format: each press is a separate entry in presses group
+            presses_group = hf["presses"]
+            for press_key in sorted(presses_group.keys()):
+                press_group = presses_group[press_key]
+                
+                if "stretchmagtec" not in press_group or "forces" not in press_group or "labels" not in press_group:
+                    continue
+                
+                magnetic = press_group["stretchmagtec"][:]  # [samples, 15, 3]
+                forces = press_group["forces"][:]  # [samples, 6]
+                labels = press_group["labels"][:]  # [samples]
+                
+                # Get stretch level from press attributes (preferred) or file attributes (fallback)
+                press_stretch_value = press_group.attrs.get("stretch_level", np.nan)
+                if np.isnan(press_stretch_value):
+                    press_stretch_value = stretch_value  # Fallback to file attribute
+                
+                press_stretch_label = press_group.attrs.get("stretch_label", "")
+                if not press_stretch_label or press_stretch_label == "unknown":
+                    press_stretch_label = stretch_label  # Fallback to file attribute
+                
+                # Extract press_id and offset_key from label
+                label_str = press_group.attrs.get("label", "")
+                press_id = ""
+                offset_key = "unknown"
+                
+                if "press_" in label_str:
+                    # Extract press_id (e.g., "pos_32_center_press_B_sequence_start" -> "B")
+                    press_match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
+                    if press_match:
+                        press_id = press_match.group(1)
+                
+                # Extract offset_key from label (e.g., "pos_32_center" -> "center")
+                if "_" in label_str:
+                    parts = label_str.split("_")
+                    for part in parts:
+                        if part in ['center', 'ne', 'nw', 'se', 'sw', 'n', 's', 'e', 'w']:
+                            offset_key = part
+                            break
+                
+                # Add all samples from this press
+                for i, (mag_sample, force_sample, label_bytes) in enumerate(zip(magnetic, forces, labels)):
+                    subset_snapshot = mag_sample[CENTRAL_SENSOR_INDICES, :]
+                    
+                    record = {
+                        "source_file": str(h5_path),
+                        "file": h5_path.name,
+                        "stretch_label": press_stretch_label,  # Use press-specific stretch label
+                        "stretch_value": press_stretch_value,  # Use press-specific stretch value
+                        "offset_key": offset_key,
+                        "press_id": press_id,
+                        "press_index": i,  # Sample index within this press
+                        "sensor_vector": mag_sample.reshape(-1),  # Flatten 15×3 → 45 features
+                        "sensor_vector_subset": subset_snapshot.reshape(-1),  # Flatten 3×3 → 9 features
+                        "force_vector": force_sample.astype(float),
+                        "fz": float(force_sample[2]),
+                    }
+                    records.append(record)
+        else:
+            # Old format: continuous data in root datasets
+            if "stretchmagtec" not in hf or "forces" not in hf or "labels" not in hf:
+                return pd.DataFrame()
 
-        sensors = hf["press_summaries/sensors"][:]           # (n_press, 15, 3)
-        forces = hf["press_summaries/forces"][:]             # (n_press, 6)
-        metadata_raw = hf["press_summaries/metadata"][:]     # (n_press,)
-
-        for sensor_snapshot, force_snapshot, meta_raw in zip(sensors, forces, metadata_raw):
-            try:
-                meta = json.loads(meta_raw.decode("utf-8"))
-            except Exception:
-                meta = {}
-
-            subset_snapshot = sensor_snapshot[CENTRAL_SENSOR_INDICES, :]
-
-            record = {
-                "source_file": str(h5_path),
-                "file": h5_path.name,
-                "stretch_label": meta.get("stretch_label", h5_path.parent.name),
-                "stretch_value": meta.get("stretch_level", np.nan),
-                "offset_key": meta.get("offset_key", "unknown"),
-                "press_id": meta.get("press_id", ""),
-                "press_index": meta.get("press_index", -1),
-                "press_depth_m": meta.get("press_depth_m", np.nan),
-                "sensor_vector": sensor_snapshot.reshape(-1),  # Flatten 15×3 → 45 features
-                "sensor_vector_subset": subset_snapshot.reshape(-1),  # Flatten 5×3 → 15 features
-                "force_vector": force_snapshot.astype(float),
-                "fz": float(force_snapshot[2]),
-            }
-            records.append(record)
+            magnetic = hf["stretchmagtec"][:]  # [samples, 15, 3]
+            forces = hf["forces"][:]  # [samples, 6]
+            labels = hf["labels"][:]  # [samples]
+            
+            # Extract metadata from labels (press_id, offset_key, etc.)
+            for i, (mag_sample, force_sample, label_bytes) in enumerate(zip(magnetic, forces, labels)):
+                try:
+                    label_str = label_bytes.decode('utf-8') if isinstance(label_bytes, bytes) else str(label_bytes)
+                except Exception:
+                    label_str = ""
+                
+                # Parse label to extract press_id and offset_key
+                press_id = ""
+                offset_key = "unknown"
+                if "press_" in label_str:
+                    # Extract press_id (e.g., "press_A" -> "A")
+                    press_match = re.search(r'press_([^_\s]+)', label_str)
+                    if press_match:
+                        press_id = press_match.group(1)
+                        # Remove common suffixes
+                        press_id = re.sub(r'_(step|lift|contact|release).*', '', press_id, flags=re.I)
+                
+                # Extract offset_key from label (e.g., "pos_32_center" -> "center")
+                if "_" in label_str:
+                    parts = label_str.split("_")
+                    for part in parts:
+                        if part in ['center', 'ne', 'nw', 'se', 'sw', 'n', 's', 'e', 'w']:
+                            offset_key = part
+                            break
+                    # Also check for numeric offsets (4, 5, 6, 7, 9, 10, 11, 12)
+                    for part in parts:
+                        if part in ['4', '5', '6', '7', '9', '10', '11', '12']:
+                            offset_key = part
+                            break
+                
+                subset_snapshot = mag_sample[CENTRAL_SENSOR_INDICES, :]
+                
+                record = {
+                    "source_file": str(h5_path),
+                    "file": h5_path.name,
+                    "stretch_label": stretch_label,
+                    "stretch_value": stretch_value,
+                    "offset_key": offset_key,
+                    "press_id": press_id,
+                    "press_index": i,  # Sample index in sequence
+                    "sensor_vector": mag_sample.reshape(-1),  # Flatten 15×3 → 45 features
+                    "sensor_vector_subset": subset_snapshot.reshape(-1),  # Flatten 3×3 → 9 features
+                    "force_vector": force_sample.astype(float),
+                    "fz": float(force_sample[2]),
+                }
+                records.append(record)
 
     return pd.DataFrame(records)
 
@@ -126,9 +229,9 @@ def load_dataset(data_root: Path) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]
                 print(f"⚠️  No HDF5 files found in {stretch_dir}")
                 continue
             latest_file = h5_files[-1]
-            stretch_df = load_press_summaries(latest_file)
+            stretch_df = load_continuous_sequences(latest_file)
             if stretch_df.empty:
-                print(f"⚠️  Press summaries missing in {latest_file}")
+                print(f"⚠️  No continuous sequences found in {latest_file}")
                 continue
 
             grouped[stretch_dir.name] = stretch_df
@@ -139,9 +242,9 @@ def load_dataset(data_root: Path) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]
             raise RuntimeError(f"No HDF5 files found in {data_root}")
 
         for h5_file in h5_files:
-            stretch_df = load_press_summaries(h5_file)
+            stretch_df = load_continuous_sequences(h5_file)
             if stretch_df.empty:
-                print(f"⚠️  Press summaries missing in {h5_file}")
+                print(f"⚠️  No continuous sequences found in {h5_file}")
                 continue
 
             if "stretch_label" in stretch_df.columns and not stretch_df["stretch_label"].isnull().all():
@@ -156,7 +259,7 @@ def load_dataset(data_root: Path) -> Tuple[pd.DataFrame, Dict[str, pd.DataFrame]
             grouped[label] = pd.concat(frames, ignore_index=True)
 
     if not all_rows:
-        raise RuntimeError(f"No press summaries found under {data_root}")
+        raise RuntimeError(f"No continuous sequences found under {data_root}")
 
     combined_df = pd.concat(all_rows, ignore_index=True)
     return combined_df, grouped
@@ -731,4 +834,66 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+                    )
+
+        if combined_models_subset:
+            joblib.dump(
+                combined_models_subset["force_model"],
+                models_dir / "force_regressor_combined_subset.joblib",
+            )
+            joblib.dump(
+                combined_models_subset["stretch_model"],
+                models_dir / "stretch_classifier_combined_subset.joblib",
+            )
+            joblib.dump(
+                combined_models_subset["combined_offset_model"],
+                models_dir / "offset_classifier_combined_subset.joblib",
+            )
+            for label, model in combined_models_subset["per_stretch_models"].items():
+                if model is not None:
+                    joblib.dump(
+                        model,
+                        models_dir / f"offset_classifier_{label}_gated_subset.joblib",
+                    )
+
+        print(f"\nModels written to {models_dir}")
+
+    # Save JSON report
+    report_payload = {
+        "force_mapping_per_stretch_full": force_results_full,
+        "force_mapping_per_stretch_subset": force_results_subset,
+        "force_mapping_combined_full": combined_force_metrics_full,
+        "force_mapping_combined_subset": combined_force_metrics_subset,
+        "offset_classification_per_stretch_full": offset_results_per_stretch_full,
+        "offset_classification_per_stretch_subset": offset_results_per_stretch_subset,
+        "offset_classification_combined_full": combined_offset_metrics_full,
+        "offset_classification_combined_subset": combined_offset_metrics_subset,
+        "offset_classification_gated_full": gated_offset_metrics_full,
+        "offset_classification_gated_subset": gated_offset_metrics_subset,
+        "stretch_classification_combined_full": combined_stretch_metrics_full,
+        "stretch_classification_combined_subset": combined_stretch_metrics_subset,
+        "kpm_thresholds": {
+            "accuracy_rmse_threshold": ACCURACY_RMSE_THRESHOLD,
+            "precision_std_threshold": PRECISION_STD_THRESHOLD,
+            "sensitivity_target": SENSITIVITY_TARGET,
+        },
+    }
+
+    # Determine report path (append run label if default name requested)
+    if args.report == REPORTS_DIR / "single_point_stretch_metrics.json":
+        report_path = REPORTS_DIR / f"{run_dir.name}_metrics.json"
+    else:
+        report_path = args.report
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report_payload, f, indent=2)
+
+    print(f"\nMetrics written to {report_path}")
+
+
+if __name__ == "__main__":
+    main()
+
 

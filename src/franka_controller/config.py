@@ -16,6 +16,7 @@ Date: 2025
 
 import os
 from pathlib import Path
+from typing import List
 
 # =============================================================================
 # PROJECT PATHS
@@ -99,15 +100,40 @@ REFERENCE_POSITION = [0.491276, 0.4175, 0.031311]  # Reference position (1,1) - 
 # =============================================================================
 NUMBER_OF_PRESSES = 1  # Number of complete press cycles per position
 STEPS_PER_PRESS = 1    # Number of vertical steps per press (1 step = direct press)
-DZ_PRESS = -0.0015      # Press depth (1mm down)
+DZ_PRESS = -0.0015      # Press depth (1mm down) - used only if FORCE_CONTROLLED_PRESS is False
 DZ_LIFT = 0.0015        # Lift distance after press (1mm up, back to original position)
-PRESS_DELAY = 0.5      # Delay between steps during press (seconds)
+PRESS_DELAY = 0.5      # Delay between steps during press (seconds) - used only if FORCE_CONTROLLED_PRESS is False
 LIFT_DELAY = 0.5       # Delay after lifting (seconds)
 MOVEMENT_DURATION = 0.5  # Duration for each relative movement (seconds)
 ABSOLUTE_MOVEMENT_DURATION = 0.5  # Duration for absolute movements (seconds)
 
+# Force-controlled pressing parameters
+FORCE_CONTROLLED_PRESS = True  # If True, use force-controlled pressing (0.1N steps from 0 to 3N)
+FORCE_STEP_SIZE = 0.1  # Force step size in Newtons (0.1N steps)
+FORCE_MAX = 3.0  # Maximum target force in Newtons (3N)
+FORCE_STEP_DELAY = 1.0  # Wait time at each force step (seconds)
+FORCE_TOLERANCE = 0.01  # Tolerance for force control (N) - must be smaller than step size
+
 # Press ID system - alphabetical identifiers for each press cycle
-PRESS_IDS = [chr(i) for i in range(65, 65 + 50)]  # Support up to 50 press cycles (A, B, ..., AX)
+# Generate: A, B, ..., Z, AA, AB, ..., AZ, BA, BB, ... (supports up to 100+ press cycles)
+def generate_press_ids(max_count: int = 100) -> List[str]:
+    """Generate alphabetical press IDs: A-Z, then AA-AZ, BA-BZ, etc."""
+    ids = []
+    # Single letters A-Z (26)
+    for i in range(26):
+        ids.append(chr(65 + i))  # A-Z
+    
+    # Double letters AA-AZ, BA-BZ, ... (26 each)
+    if max_count > 26:
+        for first_letter in range(26):
+            for second_letter in range(26):
+                if len(ids) >= max_count:
+                    return ids
+                ids.append(chr(65 + first_letter) + chr(65 + second_letter))
+    
+    return ids[:max_count]
+
+PRESS_IDS = generate_press_ids(100)  # Support up to 100 press cycles
 
 # =============================================================================
 # SENSOR IDENTIFICATION
@@ -117,7 +143,7 @@ SENSOR_NAME = "bulk_skin_std_1"  # Identifier for the sensor being characterized
 # =============================================================================
 # FT SENSOR CONFIGURATION
 # =============================================================================
-FT_PORT = '/dev/ttyUSB0'
+FT_PORT = '/dev/ttyUSB0'  # Updated after USB hub reconnection
 FT_BAUDRATE = 19200
 FT_NOISE_THRESHOLD = 0.0  # Threshold to filter noise
 
@@ -133,7 +159,7 @@ FT_CALIBRATION_ENABLED = FT_PER_POSITION_CALIBRATION_ENABLED
 # =============================================================================
 # STRETCHMAGTEC 3x5 SENSOR CONFIGURATION
 # =============================================================================
-STRETCHMAGTEC_PORT = '/dev/ttyACM0'
+STRETCHMAGTEC_PORT = '/dev/ttyACM2'  # Updated after USB hub reconnection
 STRETCHMAGTEC_BAUD = 2000000  # High-speed mode required for StretchMagTec streaming
 STRETCHMAGTEC_ROWS = 3
 STRETCHMAGTEC_COLS = 5
@@ -311,4 +337,23 @@ def print_config_summary():
 
 if __name__ == "__main__":
     print_config_summary()
+
+    print("\n" + "="*70)
+    print("MagTecK_PM CONFIGURATION SUMMARY")
+    print("="*70)
+    print(f"Robot IP: {ROBOT_IP}")
+    print(f"Main Grid: {GRID_ROWS}x{GRID_COLS} positions")
+    print(f"Grid Spacing: dx={GRID_DX:.6f}m, dy={GRID_DY:.6f}m")
+    print(f"9-Point Offsets: {list(GRID_OFFSETS.keys())}")
+    print(f"Total test positions: {len(MAIN_GRID_POSITIONS) * len(GRID_OFFSETS)}")
+    print(f"\nFT Calibration: {'Enabled' if FT_CALIBRATION_ENABLED else 'Disabled'}")
+    print(f"StretchMagTec Calibration: {'Enabled' if STRETCHMAGTEC_CALIBRATION_ENABLED else 'Disabled'}")
+    print(f"\nData Directory: {DATA_DIR}")
+    print(f"Models Directory: {MODELS_DIR}")
+    print(f"Plots Directory: {PLOTS_DIR}")
+    print("="*70 + "\n")
+
+if __name__ == "__main__":
+    print_config_summary()
+
 
