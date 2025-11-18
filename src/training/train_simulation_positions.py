@@ -606,6 +606,7 @@ def main() -> None:
             force_results.append({
                 'stretch_label': f'stretch_{stretch_label}',
                 'samples': result['n_samples'],
+                'sequences': result.get('n_test_sequences', result.get('n_sequences', 0)),
                 'rmse': result['force_rmse'],
                 'std_dev': result['force_std_dev'],
                 'fz_min_actual': result.get('fz_min_actual', np.nan),
@@ -614,6 +615,7 @@ def main() -> None:
             offset_results.append({
                 'stretch_label': f'stretch_{stretch_label}',
                 'samples': result['n_samples'],
+                'sequences': result.get('n_test_sequences', result.get('n_sequences', 0)),
                 'accuracy': result['offset_accuracy'],
             })
     
@@ -626,17 +628,20 @@ def main() -> None:
         combined_force_metrics = {
             'stretch_label': 'combined',
             'samples': combined_result.get('n_samples', 0),
+            'sequences': combined_result.get('n_test_sequences', combined_result.get('n_sequences', 0)),
             'rmse': combined_result.get('force_rmse', np.nan),
             'std_dev': combined_result.get('force_std_dev', np.nan),
         }
         combined_offset_metrics = {
             'stretch_label': 'combined',
             'samples': combined_result.get('n_samples', 0),
+            'sequences': combined_result.get('n_test_sequences', combined_result.get('n_sequences', 0)),
             'accuracy': combined_result.get('offset_accuracy', 0.0),
         }
         combined_stretch_metrics = {
             'stretch_label': 'combined',
             'samples': combined_result.get('n_samples', 0),
+            'sequences': combined_result.get('n_test_sequences', combined_result.get('n_sequences', 0)),
             'accuracy': combined_result.get('stretch_accuracy', 0.0),
         }
     

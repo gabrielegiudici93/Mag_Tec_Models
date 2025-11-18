@@ -545,8 +545,27 @@ def train_models_for_stretch(
     fz_test_min = float(np.min(y_fz_test))
     fz_test_max = float(np.max(y_fz_test))
     
+    # Calculate force resolution (KPM1) from test data
+    unique_forces = np.unique(np.round(y_fz_test, decimals=3))
+    if len(unique_forces) > 1:
+        deltas = np.diff(unique_forces)
+        force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
+    else:
+        force_resolution = float("nan")
+    
+    sensitivity_target = 0.05  # KPM1 threshold
+    kpm1_pass = force_resolution <= sensitivity_target if not np.isnan(force_resolution) else None
+    kpm2_pass = (rmse < 0.10) and (std_dev < 0.05)
+    
     print(f"  RMSE: {rmse:.4f} N")
     print(f"  Std Dev: {std_dev:.4f} N")
+    if not np.isnan(force_resolution):
+        print(f"  Force resolution (ΔF_min): {force_resolution:.6f} N")
+        print(f"  KPM1: {'PASS' if kpm1_pass else 'FAIL'}")
+    else:
+        print(f"  Force resolution (ΔF_min): N/A")
+        print(f"  KPM1: N/A")
+    print(f"  KPM2: {'PASS' if kpm2_pass else 'FAIL'}")
     print(f"  Actual force range in data: [{fz_min_actual:.3f}, {fz_max_actual:.3f}] N")
     print(f"  Train force range: [{fz_train_min:.3f}, {fz_train_max:.3f}] N")
     print(f"  Test force range: [{fz_test_min:.3f}, {fz_test_max:.3f}] N")
@@ -591,6 +610,9 @@ def train_models_for_stretch(
         'n_test_samples': len(X_test),
         'force_rmse': rmse,
         'force_std_dev': std_dev,
+        'force_resolution_est': force_resolution,
+        'kpm1_pass': kpm1_pass,
+        'kpm2_pass': kpm2_pass,
         'offset_accuracy': offset_accuracy,
         'fz_min_actual': fz_min_actual,
         'fz_max_actual': fz_max_actual,
@@ -741,8 +763,27 @@ def train_combined_model(
     fz_test_min = float(np.min(y_fz_test))
     fz_test_max = float(np.max(y_fz_test))
     
+    # Calculate force resolution (KPM1) from test data
+    unique_forces = np.unique(np.round(y_fz_test, decimals=3))
+    if len(unique_forces) > 1:
+        deltas = np.diff(unique_forces)
+        force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
+    else:
+        force_resolution = float("nan")
+    
+    sensitivity_target = 0.05  # KPM1 threshold
+    kpm1_pass = force_resolution <= sensitivity_target if not np.isnan(force_resolution) else None
+    kpm2_pass = (rmse < 0.10) and (std_dev < 0.05)
+    
     print(f"  RMSE: {rmse:.4f} N")
     print(f"  Std Dev: {std_dev:.4f} N")
+    if not np.isnan(force_resolution):
+        print(f"  Force resolution (ΔF_min): {force_resolution:.6f} N")
+        print(f"  KPM1: {'PASS' if kpm1_pass else 'FAIL'}")
+    else:
+        print(f"  Force resolution (ΔF_min): N/A")
+        print(f"  KPM1: N/A")
+    print(f"  KPM2: {'PASS' if kpm2_pass else 'FAIL'}")
     print(f"  Actual force range in data: [{fz_min_actual:.3f}, {fz_max_actual:.3f}] N")
     print(f"  Train force range: [{fz_train_min:.3f}, {fz_train_max:.3f}] N")
     print(f"  Test force range: [{fz_test_min:.3f}, {fz_test_max:.3f}] N")
@@ -806,6 +847,9 @@ def train_combined_model(
         'n_test_samples': len(X_test),
         'force_rmse': rmse,
         'force_std_dev': std_dev,
+        'force_resolution_est': force_resolution,
+        'kpm1_pass': kpm1_pass,
+        'kpm2_pass': kpm2_pass,
         'offset_accuracy': offset_accuracy,
         'stretch_accuracy': stretch_accuracy,
         'fz_min_actual': fz_min_actual,
@@ -999,11 +1043,12 @@ def main():
             force_results_full.append({
                 'stretch_label': f'stretch_{stretch_label}',
                 'samples': result['n_samples'],
+                'sequences': result.get('n_test_sequences', result.get('n_sequences', 0)),
                 'rmse': result['force_rmse'],
                 'std_dev': result['force_std_dev'],
-                'force_resolution_est': np.nan,  # Not calculated in this script
-                'kpm1_pass': None,
-                'kpm2_pass': None,
+                'force_resolution_est': result.get('force_resolution_est', np.nan),
+                'kpm1_pass': result.get('kpm1_pass', None),
+                'kpm2_pass': result.get('kpm2_pass', None),
                 'fz_min_actual': result.get('fz_min_actual', np.nan),
                 'fz_max_actual': result.get('fz_max_actual', np.nan),
                 'fz_train_min': result.get('fz_train_min', np.nan),
@@ -1014,6 +1059,7 @@ def main():
             offset_results_full.append({
                 'stretch_label': f'stretch_{stretch_label}',
                 'samples': result['n_samples'],
+                'sequences': result.get('n_test_sequences', result.get('n_sequences', 0)),
                 'accuracy': result['offset_accuracy'],
             })
         
@@ -1024,11 +1070,12 @@ def main():
         combined_force_metrics = {
             'stretch_label': 'combined',
             'samples': combined_result['n_samples'],
+            'sequences': combined_result.get('n_test_sequences', combined_result.get('n_sequences', 0)),
             'rmse': combined_result['force_rmse'],
             'std_dev': combined_result['force_std_dev'],
-            'force_resolution_est': np.nan,
-            'kpm1_pass': None,
-            'kpm2_pass': None,
+            'force_resolution_est': combined_result.get('force_resolution_est', np.nan),
+            'kpm1_pass': combined_result.get('kpm1_pass', None),
+            'kpm2_pass': combined_result.get('kpm2_pass', None),
             'fz_min_actual': combined_result.get('fz_min_actual', np.nan),
             'fz_max_actual': combined_result.get('fz_max_actual', np.nan),
             'fz_train_min': combined_result.get('fz_train_min', np.nan),
@@ -1039,6 +1086,7 @@ def main():
         combined_offset_metrics = {
             'stretch_label': 'combined',
             'samples': combined_result['n_samples'],
+            'sequences': combined_result.get('n_test_sequences', combined_result.get('n_sequences', 0)),
             'accuracy': combined_result['offset_accuracy'],
         }
         combined_stretch_metrics = {

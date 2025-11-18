@@ -312,9 +312,17 @@ The error vector is \(e_i = F_{z,i} - \hat{F}_{z,i}\). We report:
     \text{RMSE}_s &= \sqrt{\frac{1}{N} \sum_{i=1}^{N} e_i^2}, \\
     \sigma_s &= \sqrt{\frac{1}{N-1} \sum_{i=1}^{N} (e_i - \bar{e})^2},
 \end{align}
-which correspond to accuracy and precision for KPM~2. A data-driven estimate of force
-resolution (KPM~1) is computed as the minimum positive difference between unique force
-samples.
+which correspond to accuracy and precision for KPM~2. 
+
+A data-driven estimate of force resolution (KPM~1) is automatically computed during training from the test set force values. The calculation proceeds as follows:
+\begin{enumerate}[leftmargin=1.5em]
+    \item Force values in the test set are rounded to 3 decimal places
+    \item Unique force values are identified
+    \item Consecutive differences between sorted unique values are computed
+    \item The minimum non-zero difference is taken as \(\Delta F_{\text{min}}\)
+    \item KPM1 passes if \(\Delta F_{\text{min}} \leq 0.05\)~N
+\end{enumerate}
+This metric is calculated for each per-stretch model and for the combined model, and is automatically included in the JSON training report.
 
 \subsection{Press Location and Stretch Classification}
 \label{sec:classification-models}
@@ -398,17 +406,21 @@ false negatives for class \(c\), respectively.
 \section{Key Performance Metrics}
 
 \subsection{KPM1: Sensitivity (Force Resolution)}
+\label{sec:kpm1}
 KPM1 tracks the smallest distinguishable normal force when the indenter presses the skin.
-During acquisition we scan forces in a quasi-static manner (0~N \(\rightarrow\) 1~N) with
-\SI{0.05}{\newton} increments. After the regression model is trained we compute the minimum
-non-zero separation between unique ground-truth forces seen in the dataset, i.e.
-\[
-    \Delta F_{\text{min}} = \min_{i} \bigl| F_{z}^{(i+1)} - F_{z}^{(i)} \bigr|.
-\]
+During acquisition we scan forces in a quasi-static manner from 0~N to 3~N with
+\SI{0.1}{\newton} increments. After the regression model is trained, the training pipeline automatically computes the minimum
+non-zero separation between unique force values in the test set. The calculation is performed as follows:
+\begin{enumerate}[leftmargin=1.5em]
+    \item Test set force values are rounded to 3 decimal places: \(\tilde{F}_{z,i} = \text{round}(F_{z,i}, 3)\)
+    \item Unique values are extracted: \(\mathcal{U} = \{\text{unique}(\tilde{F}_{z,i})\}\)
+    \item Consecutive differences are computed: \(\Delta_i = |\mathcal{U}_{i+1} - \mathcal{U}_i|\)
+    \item The minimum non-zero difference is taken: \(\Delta F_{\text{min}} = \min_i \{\Delta_i : \Delta_i > 0\}\)
+\end{enumerate}
 Benchmarks in the requirements document specify that a valid skin should resolve forces down to
 \SI{0.05}{\newton} (50~mN) while maintaining a signal-to-noise ratio above 50~dB. In our reporting
 we mark KPM1 as \texttt{PASS} when \(\Delta F_{\text{min}} \leq 0.05~\text{N}\); otherwise the device
-fails the sensitivity target.
+fails the sensitivity target. This metric is automatically calculated and reported for each trained model (per-stretch and combined) in the JSON training report.
 
 \subsection{KPM2: Repeatability (Accuracy \& Precision)}
 KPM2 combines accuracy (low bias) and precision (low variance). We leverage the regression residuals
@@ -503,17 +515,17 @@ This table reports force mapping performance using all 15 sensors (45 raw featur
     \label{tab:force-single}
     \begin{tabular}{@{}lcccccc@{}}
         \toprule
-        Stretch & Samples & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
+        Stretch & Presses & RMSE [N] & STD [N] & $\Delta F_{\text{min}}$ [N] & KPM1 & KPM2 \\
         \midrule
-        stretch\_000pct & 10152 & 0.2434 & 0.2353 & N/A & N/A & FAIL \\
-        stretch\_010pct & 7508 & 0.2164 & 0.2137 & N/A & N/A & FAIL \\
-        stretch\_020pct & 7955 & 0.2601 & 0.2489 & N/A & N/A & FAIL \\
-        combined (pooled) & 25615 & 0.3250 & 0.2711 & N/A & N/A & FAIL \\
+        stretch\_000pct & 45 & 0.2434 & 0.2353 & 0.0090 & PASS & FAIL \\
+        stretch\_010pct & 45 & 0.2164 & 0.2137 & 0.0120 & PASS & FAIL \\
+        stretch\_020pct & 45 & 0.2601 & 0.2489 & 0.0100 & PASS & FAIL \\
+        combined (pooled) & 135 & 0.3250 & 0.2711 & 0.0090 & PASS & FAIL \\
         \bottomrule
     \end{tabular}
     \vspace{0.1cm}
     \footnotesize
-    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split by sequence. Force range in data: [0.0, 3.0]~N (normalized).}
+    \textit{Note: Press counts represent the test set size after a 70/30 train/test split by sequence. Force range in data: [0.0, 3.0]~N (normalized). $\Delta F_{\text{min}}$ and KPM1 are automatically calculated during training from test set force values (see Section~\ref{sec:kpm1} for details).}
 \end{table}
 
 \subsubsection{Press Location Classification}
@@ -527,17 +539,17 @@ after a 70/30 train/test split by sequence. The classifier achieves perfect 100\
     \label{tab:offset-single}
     \begin{tabular}{@{}lcc@{}}
         \toprule
-        Stretch & Samples & Accuracy \\
+        Stretch & Presses & Accuracy \\
         \midrule
-        stretch\_000pct & 10152 & 1.000 \\
-        stretch\_010pct & 7508 & 1.000 \\
-        stretch\_020pct & 7955 & 1.000 \\
-        combined (pooled) & 25615 & 1.000 \\
+        stretch\_000pct & 45 & 1.000 \\
+        stretch\_010pct & 45 & 1.000 \\
+        stretch\_020pct & 45 & 1.000 \\
+        combined (pooled) & 135 & 1.000 \\
         \bottomrule
     \end{tabular}
     \vspace{0.1cm}
     \footnotesize
-    \textit{Note: Sample counts represent the test set size after a 70/30 train/test split by sequence.}
+    \textit{Note: Press counts represent the test set size after a 70/30 train/test split by sequence.}
 \end{table}
 
 \subsubsection{Stretch Classification}
@@ -553,13 +565,13 @@ The classifier achieves moderate accuracy, indicating that stretch detection fro
         \toprule
         Metric & Value \\
         \midrule
-        Samples & 25615 \\
+        Presses & 135 \\
         Accuracy & 0.309 \\
         \bottomrule
     \end{tabular}
     \vspace{0.1cm}
     \footnotesize
-    \textit{Note: Sample count represents the test set size after a 70/30 train/test split by sequence.}
+    \textit{Note: Press count represents the test set size after a 70/30 train/test split by sequence.}
 \end{table}
 
 \subsection{Discussion}
@@ -765,17 +777,17 @@ simulated recordings (test2 dataset). The simulation data uses the same preproce
     \label{tab:sim-force}
     \begin{tabular}{@{}lccc@{}}
         \toprule
-        Stretch & Samples & RMSE [N] & STD [N] \\
+        Stretch & Presses & RMSE [N] & STD [N] \\
         \midrule
-        stretch\_000pct & 11130 & $9.17 \times 10^{-15}$ & $9.16 \times 10^{-15}$ \\
-        stretch\_010pct & 11130 & $9.21 \times 10^{-15}$ & $9.21 \times 10^{-15}$ \\
-        stretch\_020pct & 11130 & $9.25 \times 10^{-15}$ & $9.25 \times 10^{-15}$ \\
-        combined (pooled) & 33390 & $5.18 \times 10^{-4}$ & $5.18 \times 10^{-4}$ \\
+        stretch\_000pct & 45 & $9.17 \times 10^{-15}$ & $9.16 \times 10^{-15}$ \\
+        stretch\_010pct & 45 & $9.21 \times 10^{-15}$ & $9.21 \times 10^{-15}$ \\
+        stretch\_020pct & 45 & $9.25 \times 10^{-15}$ & $9.25 \times 10^{-15}$ \\
+        combined (pooled) & 135 & $5.18 \times 10^{-4}$ & $5.18 \times 10^{-4}$ \\
         \bottomrule
     \end{tabular}
     \vspace{0.1cm}
     \footnotesize
-    \textit{Note: Per-stretch models achieve near-perfect accuracy due to deterministic simulation. The combined model shows slightly higher RMSE due to increased diversity across stretch levels.}
+    \textit{Note: Press counts represent the test set size after a 70/30 train/test split by sequence. Per-stretch models achieve near-perfect accuracy due to deterministic simulation. The combined model shows slightly higher RMSE due to increased diversity across stretch levels.}
 \end{table}
 
 \begin{table}[H]
@@ -785,18 +797,18 @@ simulated recordings (test2 dataset). The simulation data uses the same preproce
     \label{tab:sim-offset}
     \begin{tabular}{@{}lcc@{}}
         \toprule
-        Model & Samples & Accuracy \\
+        Model & Presses & Accuracy \\
         \midrule
-        stretch\_000pct position classifier & 11130 & 1.000 \\
-        stretch\_010pct position classifier & 11130 & 1.000 \\
-        stretch\_020pct position classifier & 11130 & 1.000 \\
-        combined position classifier & 33390 & 1.000 \\
-        combined stretch classifier & 33390 & 1.000 \\
+        stretch\_000pct position classifier & 45 & 1.000 \\
+        stretch\_010pct position classifier & 45 & 1.000 \\
+        stretch\_020pct position classifier & 45 & 1.000 \\
+        combined position classifier & 135 & 1.000 \\
+        combined stretch classifier & 135 & 1.000 \\
         \bottomrule
     \end{tabular}
     \vspace{0.1cm}
     \footnotesize
-    \textit{Note: Offset mapping uses relative positions to center, enabling correct classification across different stretch levels despite varying absolute coordinates.}
+    \textit{Note: Press counts represent the test set size after a 70/30 train/test split by sequence. Offset mapping uses relative positions to center, enabling correct classification across different stretch levels despite varying absolute coordinates.}
 \end{table}
 
 \subsubsection{Where to find the artefacts}
