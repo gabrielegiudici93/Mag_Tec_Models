@@ -29,8 +29,9 @@ REPO_ROOT = SRC_ROOT.parent
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from training.train_single_point_models import load_sequences_from_h5
+from training.train_single_point_models import load_sequences_from_h5, remove_outliers
 from training.train_simulation_positions import load_simulation_file, convert_to_sequences
+from sklearn.preprocessing import MinMaxScaler
 
 
 def load_real_data(h5_path: Path, stretch_label: str) -> List[Dict]:
@@ -168,6 +169,7 @@ def compare_magnetic_fields(
     sim_sequences: List[Dict],
     stretch_label: str,
     output_dir: Path,
+    z_threshold: float = 3.0,
 ) -> Dict:
     """Compare real and simulated magnetic field data.
     
@@ -176,6 +178,7 @@ def compare_magnetic_fields(
         sim_sequences: List of simulated data sequences
         stretch_label: Stretch level label (e.g., '000pct')
         output_dir: Directory to save plots and metrics
+        z_threshold: Threshold for outlier removal (MAD-based)
     
     Returns:
         Dictionary with comparison metrics
@@ -184,13 +187,20 @@ def compare_magnetic_fields(
         print(f"⚠️  Skipping comparison for {stretch_label}: missing data")
         return {}
     
-    # Aggregate all sequences
+    # STEP 1: Remove outliers from real sequences
+    print(f"  Removing outliers from real data (z_threshold={z_threshold})...")
+    real_sequences_cleaned, outlier_indices = remove_outliers(real_sequences, z_threshold)
+    if outlier_indices:
+        print(f"    Removed {len(outlier_indices)} outlier sequences: {outlier_indices}")
+    print(f"    Real sequences: {len(real_sequences)} → {len(real_sequences_cleaned)}")
+    
+    # STEP 2: Aggregate all sequences
     all_real_magnetic = []
     all_real_fz = []
     all_sim_magnetic = []
     all_sim_fz = []
     
-    for seq in real_sequences:
+    for seq in real_sequences_cleaned:
         # Use absolute Fz values
         fz = np.abs(seq['fz'])
         # Filter to force range [0.8, 3.0] N
@@ -218,19 +228,48 @@ def compare_magnetic_fields(
     magnetic_sim = np.concatenate(all_sim_magnetic, axis=0)
     fz_sim = np.concatenate(all_sim_fz)
     
-    # Interpolate to common force axis
+    # STEP 3: Interpolate to common force axis
     magnetic_real_interp, magnetic_sim_interp = interpolate_to_common_force(
         magnetic_real, fz_real, magnetic_sim, fz_sim,
         force_range=(0.8, 3.0), n_points=50
     )
     
+    # STEP 4: Normalize separately using MinMaxScaler
+    # Normalize real data (after outlier removal)
+    print(f"  Normalizing real data (separate minmax)...")
+    real_scaler = MinMaxScaler()
+    n_samples, n_sensors, n_channels = magnetic_real_interp.shape
+    magnetic_real_flat = magnetic_real_interp.reshape(n_samples, -1)  # [samples, 45]
+    magnetic_real_normalized_flat = real_scaler.fit_transform(magnetic_real_flat)
+    magnetic_real_normalized = magnetic_real_normalized_flat.reshape(n_samples, n_sensors, n_channels)
+    
+    # Normalize simulated data (separate minmax)
+    print(f"  Normalizing simulated data (separate minmax)...")
+    sim_scaler = MinMaxScaler()
+    n_samples_sim, n_sensors_sim, n_channels_sim = magnetic_sim_interp.shape
+    magnetic_sim_flat = magnetic_sim_interp.reshape(n_samples_sim, -1)  # [samples, 45]
+    magnetic_sim_normalized_flat = sim_scaler.fit_transform(magnetic_sim_flat)
+    magnetic_sim_normalized = magnetic_sim_normalized_flat.reshape(n_samples_sim, n_sensors_sim, n_channels_sim)
+    
+    # Use normalized data for comparison
+    magnetic_real_interp = magnetic_real_normalized
+    magnetic_sim_interp = magnetic_sim_normalized
+    
     # Compute metrics per sensor and channel
     metrics = {
         'stretch_label': stretch_label,
         'n_real_sequences': len(real_sequences),
+        'n_real_sequences_after_outlier_removal': len(real_sequences_cleaned),
+        'n_outliers_removed': len(outlier_indices),
         'n_sim_sequences': len(sim_sequences),
         'n_real_samples': len(magnetic_real),
         'n_sim_samples': len(magnetic_sim),
+        'normalization': {
+            'real_min': float(np.min(magnetic_real)),
+            'real_max': float(np.max(magnetic_real)),
+            'sim_min': float(np.min(magnetic_sim)),
+            'sim_max': float(np.max(magnetic_sim)),
+        },
         'sensor_metrics': {},
     }
     
@@ -368,6 +407,12 @@ def main():
         default=['000pct', '010pct', '020pct'],
         help='Stretch labels to compare (default: 000pct 010pct 020pct)'
     )
+    parser.add_argument(
+        '--z-threshold',
+        type=float,
+        default=3.0,
+        help='Z-threshold for outlier removal using MAD (default: 3.0)'
+    )
     
     args = parser.parse_args()
     
@@ -416,6 +461,7 @@ def main():
             sim_sequences,
             stretch,
             args.output_dir,
+            z_threshold=args.z_threshold,
         )
         
         if metrics:

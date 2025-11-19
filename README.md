@@ -374,10 +374,12 @@ python3 src/training/compare_sim2real_magnetic.py \
 
 **What the comparison does:**
 - Loads real magnetic field data from robot HDF5 files
+- **Removes outliers from real data** using Median Absolute Deviation (MAD) with configurable z-threshold (default: 3.0)
 - Loads simulated magnetic field data from your HDF5 files
 - Interpolates both to a common force axis (0.8N to 3.0N)
+- **Normalizes real and simulated data separately** using MinMaxScaler (each dataset gets its own min/max normalization)
 - Computes per-sensor metrics:
-  - **RMSE**: Root Mean Square Error between real and simulated magnetic fields
+  - **RMSE**: Root Mean Square Error between real and simulated magnetic fields (after separate normalization)
   - **Correlation**: Pearson correlation coefficient
 - Generates comparison plots showing real vs simulated magnetic fields for all 15 sensors and 3 channels (Bx, By, Bz)
 
@@ -387,7 +389,9 @@ python3 src/training/compare_sim2real_magnetic.py \
 
 **Important Notes:**
 - The comparison focuses **ONLY on magnetic field similarity**, not force prediction accuracy
-- Both real and simulated data are normalized to the same force range (0.8-3.0N)
+- **Outlier removal**: Real data sequences are cleaned using MAD-based outlier detection before comparison
+- **Separate normalization**: Real and simulated data are normalized independently using MinMaxScaler (each dataset uses its own min/max values)
+- Both datasets are interpolated to the same force range (0.8-3.0N) for alignment
 - The comparison is done per stretch level separately (0%, 10%, 20%)
 - Best matching sensors typically show RMSE < 0.1 and correlation > 0.9
 
