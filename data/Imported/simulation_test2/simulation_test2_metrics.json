@@ -1,0 +1,128 @@
+{
+  "force_mapping_per_stretch_full": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 11130,
+      "rmse": 9.165115633441282e-15,
+      "std_dev": 9.163591935012697e-15,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 3.0
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 11130,
+      "rmse": 9.206599700618957e-15,
+      "std_dev": 9.205860107631177e-15,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 3.0
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 11130,
+      "rmse": 9.251002918821766e-15,
+      "std_dev": 9.245297914855033e-15,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 3.0
+    }
+  ],
+  "force_mapping_combined_full": {
+    "stretch_label": "combined",
+    "samples": 33390,
+    "rmse": 0.0005181811356462351,
+    "std_dev": 0.0005175208222287623
+  },
+  "offset_classification_per_stretch_full": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 11130,
+      "accuracy": 1.0
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 11130,
+      "accuracy": 1.0
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 11130,
+      "accuracy": 1.0
+    }
+  ],
+  "offset_classification_combined_full": {
+    "stretch_label": "combined",
+    "samples": 33390,
+    "accuracy": 1.0
+  },
+  "stretch_classification_combined_full": {
+    "stretch_label": "combined",
+    "samples": 33390,
+    "accuracy": 1.0
+  },
+  "config": {
+    "positions_detected": {
+      "x+00.0mm_y+00.0mm": [
+        0.0,
+        0.0
+      ],
+      "x-05.5mm_y+02.5mm": [
+        -5.5,
+        2.5
+      ],
+      "x+05.5mm_y+02.5mm": [
+        5.5,
+        2.5
+      ],
+      "x+05.5mm_y-02.5mm": [
+        5.5,
+        -2.5
+      ],
+      "x-05.5mm_y-02.5mm": [
+        -5.5,
+        -2.5
+      ],
+      "x-01.0mm_y+00.0mm": [
+        -1.0,
+        0.0
+      ],
+      "x-06.7mm_y+02.5mm": [
+        -6.7,
+        2.5
+      ],
+      "x+04.7mm_y+02.5mm": [
+        4.7,
+        2.5
+      ],
+      "x+04.7mm_y-02.5mm": [
+        4.7,
+        -2.5
+      ],
+      "x-06.7mm_y-02.5mm": [
+        -6.7,
+        -2.5
+      ],
+      "x-02.0mm_y+00.0mm": [
+        -2.0,
+        0.0
+      ],
+      "x-07.9mm_y+02.4mm": [
+        -7.9,
+        2.4000000000000004
+      ],
+      "x+03.9mm_y+02.4mm": [
+        3.9000000000000004,
+        2.4000000000000004
+      ],
+      "x+03.9mm_y-02.4mm": [
+        3.9000000000000004,
+        -2.4000000000000004
+      ],
+      "x-07.9mm_y-02.4mm": [
+        -7.9,
+        -2.4000000000000004
+      ]
+    },
+    "target_sequences": 150,
+    "use_gpu": true,
+    "z_threshold": 3.0
+  }
+}
