@@ -379,6 +379,7 @@ The simulation team can extract force trajectories and magnetic field data from 
    import h5py
    import numpy as np
    
+   # Example using the existing dataset in data/Single_Point/
    h5_path = "data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/force_0.0to3.0N_step0.1N_single_test1_stretch_000pct.h5"
    
    with h5py.File(h5_path, 'r') as f:
@@ -426,13 +427,17 @@ save_simulation_data(simulated_magnetic, fz_trajectory, output_path)
 
 Use the `compare_sim2real_magnetic.py` script to quantitatively compare your simulated magnetic fields with the real measurements:
 
+**Example using the existing Single_Point dataset:**
+
 ```bash
 python3 src/training/compare_sim2real_magnetic.py \
     --real-data-dir data/Single_Point/force_0.0to3.0N_step0.1N_single_test1 \
-    --sim-data-dir data/simulation/test2 \
+    --sim-data-dir data/Imported/simulation_test2 \
     --output-dir plots/comparison/sim2real \
     --stretches 000pct 010pct 020pct
 ```
+
+**Note:** The real data directory should point to a folder containing HDF5 files with names like `*_stretch_000pct.h5`, `*_stretch_010pct.h5`, `*_stretch_020pct.h5`. The simulation data directory should contain HDF5 files with the same naming convention or compatible names.
 
 **What the comparison does:**
 - Loads real magnetic field data from robot HDF5 files
