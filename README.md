@@ -296,6 +296,101 @@ HDF5 Export → train_simulation_positions.py → Models + Metrics
 
 Both workflows produce the same model types and can be evaluated using the same tools (e.g., `print_metrics_tables.py`).
 
+## COMPARISON MODEL SIM2REAL
+
+### Extracting Force Trajectories from Real Data for Simulation Replication
+
+The simulation team can extract force trajectories and magnetic field data from the real robot datasets to replicate experiments. Here's how to extract the information:
+
+**Real Data Structure:**
+- Real data is stored in HDF5 files with a `presses/` group
+- Each press sequence is in `presses/press_XXX/` with:
+  - `forces` [samples, 6]: FT sensor data (Fz is in column 2)
+  - `stretchmagtec` [samples, 15, 3]: Magnetic field from 15 sensors, 3 channels (Bx, By, Bz)
+  - `timestamps` [samples]: Time stamps (normalized to start at 0)
+  - Attributes: `stretch_label` (e.g., '000pct', '010pct', '020pct'), `offset` (e.g., 'center', 'ne', 'nw', 'se', 'sw')
+
+**How to Extract Force Trajectories:**
+
+1. **Load the HDF5 file:**
+   ```python
+   import h5py
+   import numpy as np
+   
+   h5_path = "data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/force_0.0to3.0N_step0.1N_single_test1_stretch_000pct.h5"
+   
+   with h5py.File(h5_path, 'r') as f:
+       presses = f['presses']
+       for press_key in sorted(presses.keys()):
+           press = presses[press_key]
+           forces = press['forces'][:]  # [samples, 6]
+           fz = forces[:, 2]  # Extract Fz component (force in Z direction)
+           timestamps = press['timestamps'][:]  # Time axis
+           stretch_label = press.attrs.get('stretch_label', 'unknown')
+           offset = press.attrs.get('offset', 'unknown')
+   ```
+
+2. **Force Trajectory Characteristics:**
+   - Each press sequence represents one complete indentation cycle
+   - Fz starts from ~0.8N (initial contact) and increases to 3.0N in steps of 0.1N
+   - The trajectory is force-controlled: the robot presses until reaching each target force (0.0, 0.1, 0.2, ..., 3.0N)
+   - Each sequence typically contains 50-100 samples (duration ~0.5-1.0 seconds at 100Hz)
+
+3. **What to Replicate in Simulation:**
+   - **Force trajectory**: Use the same Fz trajectory (from ~0.8N to 3.0N) as input to your simulator
+   - **Contact positions**: Test the same 5 positions (center, ne, nw, se, sw) for each stretch level
+   - **Stretch levels**: Replicate experiments at 0%, 10%, and 20% stretch separately
+   - **Output**: Measure the magnetic field at 15 sensor locations (3×5 grid) with 3 channels (Bx, By, Bz)
+
+4. **Expected Output Format:**
+   Your simulation should export HDF5 files with:
+   - `MagneticField` [samples, 15, 3]: Magnetic field readings matching the force trajectory
+   - `forcesTest` [samples, 3]: The force trajectory used (Fx, Fy, Fz)
+   - `IdenterPosition` [samples, 3]: Probe position in metres (X, Y, Z)
+
+**Example Workflow:**
+```python
+# 1. Load real force trajectory
+fz_trajectory = [...]  # From real data, shape [samples]
+
+# 2. Run simulation with this force trajectory
+simulated_magnetic = simulate_press(fz_trajectory, stretch_level=0.0, position='center')
+
+# 3. Save to HDF5 matching the expected format
+save_simulation_data(simulated_magnetic, fz_trajectory, output_path)
+```
+
+### Comparing Real vs Simulated Magnetic Fields
+
+Use the `compare_sim2real_magnetic.py` script to quantitatively compare your simulated magnetic fields with the real measurements:
+
+```bash
+python3 src/training/compare_sim2real_magnetic.py \
+    --real-data-dir data/Single_Point/force_0.0to3.0N_step0.1N_single_test1 \
+    --sim-data-dir data/simulation/test2 \
+    --output-dir plots/comparison/sim2real \
+    --stretches 000pct 010pct 020pct
+```
+
+**What the comparison does:**
+- Loads real magnetic field data from robot HDF5 files
+- Loads simulated magnetic field data from your HDF5 files
+- Interpolates both to a common force axis (0.8N to 3.0N)
+- Computes per-sensor metrics:
+  - **RMSE**: Root Mean Square Error between real and simulated magnetic fields
+  - **Correlation**: Pearson correlation coefficient
+- Generates comparison plots showing real vs simulated magnetic fields for all 15 sensors and 3 channels (Bx, By, Bz)
+
+**Output:**
+- Comparison plots: `plots/comparison/sim2real/sim2real_comparison_XXXpct.png`
+- Metrics JSON: `plots/comparison/sim2real/sim2real_metrics.json`
+
+**Important Notes:**
+- The comparison focuses **ONLY on magnetic field similarity**, not force prediction accuracy
+- Both real and simulated data are normalized to the same force range (0.8-3.0N)
+- The comparison is done per stretch level separately (0%, 10%, 20%)
+- Best matching sensors typically show RMSE < 0.1 and correlation > 0.9
+
 ### Example Output: Simulation Metrics Tables
 
 After running `train_simulation_positions.py`, you can view the results using:
