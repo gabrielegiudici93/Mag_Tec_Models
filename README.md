@@ -42,7 +42,18 @@ GitHub.
    - Three HDF5 files (`…_stretch_000pct.h5`, `…_stretch_010pct.h5`, `…_stretch_020pct.h5`).
    - `models/` with the trained Random Forest artefacts (per-stretch, pooled, gated).
    - `<run_label>_metrics.json` summarising RMSE/STD, classification accuracy, and KPM pass/fail flags.
-4. The scripts launch the training pipeline automatically after all stretches finish. To rerun later:
+4. The scripts launch the training pipeline automatically after all stretches finish. To rerun training manually:
+   ```bash
+   # For single-point data
+   python3 src/training/train_single_point_models.py \
+       --data-dir data/Single_Point/force_0.0to3.0N_step0.1N_single_test1 \
+       --models-dir data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/models \
+       --use-gpu \
+       --z-threshold 3.0 \
+       --report data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/force_0.0to3.0N_step0.1N_single_test1_metrics.json
+   ```
+   
+   Or use the evaluation script (legacy):
    ```bash
    python3 src/training/evaluate_single_point_stretch.py \
        --data-root data/2.5mm_single_test1 \
@@ -52,6 +63,40 @@ GitHub.
    same calibration pipeline as the data-collection scripts.
 
 ## 2. Training & KPIs from Existing HDF5 Datasets
+
+### Training Pipeline Overview
+
+The training pipeline (`train_single_point_models.py` and `train_simulation_positions.py`) applies the following preprocessing and training steps:
+
+**Data Processing:**
+1. **Outlier Removal**: Sequences with anomalous characteristics are removed using Median Absolute Deviation (MAD) outlier detection based on duration, max Fz, and number of samples (default z-threshold: 3.0)
+2. **Dataset Balancing**: Sequences are balanced across stretch levels by taking the minimum count to ensure equal representation
+3. **Displacement Filtering**: Samples with high consecutive displacement are filtered out independently for:
+   - Magnetic data: Removes samples where consecutive magnetic field readings show displacement above the 95th percentile
+   - Force data: Removes samples where consecutive force readings show displacement above the 95th percentile
+   - The two sensors are treated independently to avoid cross-contamination
+4. **Feature Extraction**: Uses **raw features only** (45 features: 15 sensors × 3 channels). Feature engineering has been removed.
+5. **Feature Normalization**: All magnetic features are normalized using `StandardScaler` (zero mean, unit variance) applied globally across all training sequences
+6. **Force Normalization**: Fz values are normalized to a target range:
+   - Physical data: [0, 3] N
+   - Simulation data: [0, 3] N (absolute values, negative sign restored during plotting)
+   - Original force range is stored in `fz_scaler` for denormalization
+
+**Model Training:**
+- **Train/Test Split**: 70/30 split by **sequence** (not by sample) to avoid data leakage
+- **Model Type**: Random Forest Regressor/Classifier with:
+  - 200-400 estimators (trees)
+  - Unlimited depth (or limited for regularization)
+  - GPU acceleration support (using `cuml` or `xgboost` if available)
+- **Scaler Persistence**: `StandardScaler` and `fz_scaler` are saved alongside models for consistent preprocessing during inference
+- **KPM1 Calculation**: Force resolution (ΔF_min) and KPM1 pass/fail are automatically calculated from test set force values
+
+**Output:**
+- Trained models saved as `.joblib` files (force regressor, offset classifier, stretch classifier)
+- `scaler.joblib` and `fz_scaler.joblib` saved for consistent preprocessing
+- JSON metrics report with RMSE, STD, accuracy, KPM1/KPM2 flags, and sequence counts
+
+### Training Physical Models
 
 Teams that already have HDF5 recordings (e.g., simulation exports) can reuse the analysis pipeline
 without running the robot:
@@ -207,10 +252,17 @@ python3 src/training/train_simulation_positions.py \
 1. Loads the HDF5 files
 2. Infers stretch labels from filenames or attributes
 3. Derives position labels by rounding `IdenterPosition` X/Y coordinates to 0.1mm
-4. Trains per-stretch force regressors (if `forcesTest` is provided)
-5. Trains per-stretch position classifiers (center + 4 offsets)
-6. Trains pooled stretch and position classifiers
-7. Saves all models and metrics
+4. Converts continuous data to sequences (similar to real data structure)
+5. Duplicates sequences to match real data count (if needed)
+6. Removes outliers using MAD (Median Absolute Deviation)
+7. Balances sequences across stretch levels
+8. Applies displacement filtering (independent for magnetic and force data)
+9. Normalizes features using StandardScaler
+10. Normalizes Fz to target range (0-3N for physical, absolute values)
+11. Trains per-stretch force regressors (if `forcesTest` is provided)
+12. Trains per-stretch position classifiers (center + 4 offsets)
+13. Trains pooled stretch and position classifiers
+14. Saves all models, scalers, and metrics
 
 **Step 3: Where Results Are Collected**
 
@@ -256,9 +308,19 @@ The `simulation_points_test1_metrics.json` contains:
 
 **Similarities:**
 - **Same model types**: Both use Random Forest for force regression, position classification, and stretch classification
-- **Same input features**: Both use flattened magnetic field data (45 features: 15 sensors × 3 channels)
-- **Same training methodology**: 70/30 train/test split, same hyperparameters (200-400 trees, unlimited depth)
-- **Same output structure**: Models saved as `.joblib` files, metrics in JSON format
+- **Same input features**: Both use flattened magnetic field data (45 features: 15 sensors × 3 channels) - **raw features only, no feature engineering**
+- **Same training methodology**: 
+  - 70/30 train/test split **by sequence** (not by sample)
+  - Same hyperparameters (200-400 trees, unlimited or limited depth)
+  - GPU acceleration support (using `cuml` or `xgboost` if available)
+- **Same preprocessing**: 
+  - Outlier removal using MAD
+  - Dataset balancing across stretch levels
+  - Displacement filtering (independent for magnetic and force data)
+  - Feature normalization using StandardScaler
+  - Fz normalization to target range (0-3N)
+- **Same output structure**: Models saved as `.joblib` files, scalers saved separately, metrics in JSON format
+- **KPM1 calculation**: Both automatically calculate force resolution (ΔF_min) and KPM1 pass/fail from test set
 
 **Key Differences:**
 
