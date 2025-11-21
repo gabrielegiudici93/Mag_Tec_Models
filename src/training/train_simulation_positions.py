@@ -300,6 +300,9 @@ def convert_to_sequences(
                     seq_forces = seq_forces_downsampled
                     seq_fz = np.abs(seq_forces[:, 2])  # Use absolute value for training
         
+        # Filter magnetic sensor: set values below 250 to 0 (noise threshold)
+        seq_magnetic = np.where(np.abs(seq_magnetic) < 250, 0, seq_magnetic)
+        
         # Map position to offset name
         offset = offset_map.get(pos_label, "unknown")
         

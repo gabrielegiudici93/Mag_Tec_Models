@@ -284,6 +284,10 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
     for seq in sequences:
         # Magnetic data: [samples, 15, 3]
         magnetic = seq['stretchmagtec']
+        
+        # Filter magnetic sensor: set values below 250 to 0 (noise threshold)
+        magnetic = np.where(np.abs(magnetic) < 250, 0, magnetic)
+        
         # FT data: [samples, 6] or [samples, 3] - we need Fz
         forces = seq.get('forces', None)
         if forces is not None:

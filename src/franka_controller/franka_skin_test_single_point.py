@@ -72,7 +72,7 @@ FORCE_CONTROLLED_PRESS = True  # Use force-controlled pressing
 FORCE_MIN = 0.0  # Start from 0.0N
 FORCE_MAX = 3.0  # Up to 3.0N
 FORCE_STEP_SIZE = 0.1  # Step size 0.1N
-FORCE_STEP_DELAY = 0.01  # Wait time at each force step (0.0s for fast debugging, typically 1.0s for data collection)
+FORCE_STEP_DELAY = 0.2  # Wait time at each force step (0.2s for data collection)
 FORCE_TOLERANCE = 0.01  # Tolerance for reaching target force
 
 # Pressing profile configuration (legacy - used only if FORCE_CONTROLLED_PRESS is False)

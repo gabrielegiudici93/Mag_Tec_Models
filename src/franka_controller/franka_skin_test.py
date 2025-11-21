@@ -729,11 +729,20 @@ def main():
                 
                 # For force-controlled pressing: get the ORIGINAL starting Z position ONCE before all presses
                 # This ensures all presses start from and return to the same position
+                # INCREASE by 5mm to avoid starting with force already at 0.8N
                 reference_initial_z = None
                 if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
                     reference_state = r.getState()
-                    reference_initial_z = reference_state.T[2, 3]
-                    print(f"Reference Z position for all presses: {reference_initial_z:.6f}m")
+                    reference_initial_z = reference_state.T[2, 3] + 0.005  # Add 5mm (0.005m) to starting position
+                    print(f"Reference Z position for all presses: {reference_initial_z:.6f}m (increased by 5mm from {reference_state.T[2, 3]:.6f}m)")
+                    # Move to the increased position
+                    current_state = r.getState()
+                    current_z = current_state.T[2, 3]
+                    z_diff = reference_initial_z - current_z
+                    if abs(z_diff) > 0.0001:  # More than 0.1mm difference
+                        print(f"  Moving up 5mm to starting position...")
+                        move_relative(r, 0, 0, z_diff, MOVEMENT_DURATION)
+                        time.sleep(0.5)
                 
                 # Perform press cycles at this position
                 for press_num in range(NUMBER_OF_PRESSES):
@@ -823,6 +832,10 @@ def main():
                                     # CRITICAL: Mark the start of data collection IMMEDIATELY before the FIRST movement
                                     # This ensures the sequence starts exactly when the robot begins pressing
                                     if first_movement:
+                                        # Print FT sensor values at the beginning of sequence
+                                        current_ft = ft_thread.get_ft()
+                                        print(f"  📊 FT sensor values at sequence start: Fx={current_ft[0]:.4f}N, Fy={current_ft[1]:.4f}N, Fz={current_ft[2]:.4f}N, "
+                                              f"Tx={current_ft[3]:.4f}Nm, Ty={current_ft[4]:.4f}Nm, Tz={current_ft[5]:.4f}Nm")
                                         logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_start")
                                         first_movement = False
                                     
