@@ -46,7 +46,7 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # =============================================================================
 TARGET_POSITION_ID = 32
 TARGET_OFFSETS = ['center', 'nw', 'ne', 'se', 'sw']
-TARGET_POSITION_COORDS = [0.496776, 0.438500, 0.031811]  # Corrected X, Y coordinates; Z increased by 0.5mm (0.0005m)
+TARGET_POSITION_COORDS = [0.495774, 0.440503, 0.034311]#es; Z increased by 0.5mm (0.0005m)
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
 BASE_EW_OFFSET = 0.0050  # 5.0 mm
@@ -327,12 +327,23 @@ def generate_run_name() -> Tuple[str, Path]:
     existing = sorted(p.name for p in data_root.glob(f"{base_name}*") if p.is_dir())
     run_id = 1
     for name in existing:
-        suffix = name.replace(base_name, "").strip("_")
-        try:
-            candidate = int(suffix)
-            run_id = max(run_id, candidate + 1)
-        except ValueError:
-            continue
+        # Extract number from "base_name_testN" format
+        if name.startswith(base_name):
+            suffix = name[len(base_name):].strip("_")
+            # Try to extract number from "testN" or just "N"
+            if suffix.startswith("test"):
+                try:
+                    candidate = int(suffix[4:])  # Skip "test" prefix
+                    run_id = max(run_id, candidate + 1)
+                except ValueError:
+                    continue
+            else:
+                # Try direct integer conversion
+                try:
+                    candidate = int(suffix)
+                    run_id = max(run_id, candidate + 1)
+                except ValueError:
+                    continue
 
     run_label = f"{base_name}_test{run_id}"
     return run_label, data_root / run_label
