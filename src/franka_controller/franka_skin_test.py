@@ -278,15 +278,40 @@ class FTSensorThread(threading.Thread):
             ser_tmp = serial.Serial(port=self.port, baudrate=self.baudrate, bytesize=8, parity='N', stopbits=1, timeout=1)
             ser_tmp.write(bytearray([0xff]*50))
             ser_tmp.close()
+            time.sleep(0.1)  # Brief pause after reset
+            
             mm.BAUDRATE = self.baudrate
             mm.BYTESIZE = 8
             mm.PARITY = 'N'
             mm.STOPBITS = 1
             mm.TIMEOUT = 1
-            ft300 = mm.Instrument(self.port, slaveaddress=9)
-            ft300.close_port_after_each_call = True
-            ft300.write_register(410, 0x0200)
-            del ft300
+            
+            # Retry logic for minimalmodbus initialization (checksum errors can occur)
+            max_retries = 3
+            retry_delay = 0.5
+            ft300 = None
+            for attempt in range(max_retries):
+                try:
+                    ft300 = mm.Instrument(self.port, slaveaddress=9)
+                    ft300.close_port_after_each_call = True
+                    ft300.write_register(410, 0x0200)
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"[FT Thread] MinimalModbus initialization attempt {attempt + 1}/{max_retries} failed: {e}")
+                        print(f"[FT Thread] Retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        if ft300:
+                            try:
+                                del ft300
+                            except:
+                                pass
+                    else:
+                        # Last attempt failed - log but continue (sensor might still work)
+                        print(f"[FT Thread] ⚠️  MinimalModbus initialization failed after {max_retries} attempts: {e}")
+                        print(f"[FT Thread] Continuing anyway - sensor may still work in streaming mode")
+            if ft300:
+                del ft300
             ser = serial.Serial(port=self.port, baudrate=self.baudrate, bytesize=8, parity='N', stopbits=1, timeout=1)
             STARTBYTES = bytes([0x20, 0x4e])
             ser.read_until(STARTBYTES)
@@ -297,25 +322,56 @@ class FTSensorThread(threading.Thread):
                 print("CRC ERROR on ZeroRef")
                 return
             zeroRef = forceFromSerialMessage(dataArray)
+            consecutive_errors = 0
+            max_consecutive_errors = 10
+            
             while self.running:
-                data = ser.read_until(STARTBYTES)
-                dataArray = bytearray(data)
-                dataArray = STARTBYTES + dataArray[:-2]
-                if not crcCheck(dataArray):
+                try:
+                    data = ser.read_until(STARTBYTES)
+                    dataArray = bytearray(data)
+                    dataArray = STARTBYTES + dataArray[:-2]
+                    if not crcCheck(dataArray):
+                        consecutive_errors += 1
+                        if consecutive_errors >= max_consecutive_errors:
+                            print(f"[FT Thread] ⚠️  Too many CRC errors ({consecutive_errors}), sensor may be disconnected")
+                        continue
+                    
+                    # Reset error counter on successful read
+                    consecutive_errors = 0
+                    
+                    raw_force = forceFromSerialMessage(dataArray, zeroRef)
+                    
+                    # Store raw values (not filtered) for GUI display
+                    # Filtering is only for noise reduction in plots, but GUI should show actual values
+                    with self.lock:
+                        self.raw_force_reading = raw_force.copy()  # Store raw (unfiltered) for GUI
+                        # Apply noise threshold for compensated reading (used in logging)
+                        ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
+                        self.force_reading = ft_calibration.compensate_force(ft_cleaned)
+                    ft_data_ready_event.set()
+                    
+                except serial.SerialTimeoutException:
+                    # Timeout is normal if no data available, just continue
                     continue
-                raw_force = forceFromSerialMessage(dataArray, zeroRef)
-                
-                # Store raw values (not filtered) for GUI display
-                # Filtering is only for noise reduction in plots, but GUI should show actual values
-                with self.lock:
-                    self.raw_force_reading = raw_force.copy()  # Store raw (unfiltered) for GUI
-                    # Apply noise threshold for compensated reading (used in logging)
-                    ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
-                    self.force_reading = ft_calibration.compensate_force(ft_cleaned)
-                ft_data_ready_event.set()
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors % 10 == 0:  # Print every 10th error to avoid spam
+                        print(f"[FT Thread] ⚠️  Error reading FT data (error #{consecutive_errors}): {e}")
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"[FT Thread] ⚠️  Too many consecutive errors ({consecutive_errors}), stopping FT thread")
+                        break
+                    time.sleep(0.01)  # Brief pause before retry
+                    continue
+                    
             ser.close()
         except Exception as e:
-            print(f"FT Sensor thread error: {e}")
+            print(f"[FT Thread] Fatal error in FT sensor thread: {e}")
+            import traceback
+            traceback.print_exc()
+            # Mark as error so GUI can show it
+            with self.lock:
+                self.raw_force_reading = [float('nan')] * 6
+                self.force_reading = [float('nan')] * 6
 
     def get_ft(self):
         """Return compensated force reading"""
