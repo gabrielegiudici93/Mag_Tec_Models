@@ -32,6 +32,7 @@ from scipy.spatial.transform import Rotation as R
 import os
 import sys
 import json
+import signal
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -592,9 +593,33 @@ def move_relative(r, dx, dy, dz, duration=MOVEMENT_DURATION):
 # Global variables to expose to GUI adapter
 ft_thread = None
 stretchmagtec_reader = None
+logger = None
+r = None
+shutdown_requested = False
+
+def signal_handler(signum, frame):
+    """Handle SIGINT (Ctrl+C) signal"""
+    global shutdown_requested
+    print("\n\n⚠️  SIGINT (Ctrl+C) received - requesting shutdown...")
+    shutdown_requested = True
+    # Stop threads immediately
+    if ft_thread is not None:
+        ft_thread.running = False
+    if stretchmagtec_reader is not None:
+        stretchmagtec_reader.running = False
+    if logger is not None:
+        logger.running = False
+    if r is not None:
+        try:
+            r.stop()
+        except:
+            pass
 
 def main():
-    global ft_thread, stretchmagtec_reader, logger, r
+    global ft_thread, stretchmagtec_reader, logger, r, shutdown_requested
+    
+    # Set up signal handler for Ctrl+C
+    signal.signal(signal.SIGINT, signal_handler)
     
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
@@ -748,6 +773,10 @@ def main():
         position_count = 0
         
         for position_id in position_ids_to_test:
+            # Check for shutdown request
+            if shutdown_requested:
+                print("\n⚠️  Shutdown requested - stopping data collection")
+                raise KeyboardInterrupt
             position_count += 1
             row = position_id // 10
             col = position_id % 10
@@ -821,6 +850,10 @@ def main():
                 
                 # Perform press cycles at this position
                 for press_num in range(NUMBER_OF_PRESSES):
+                # Check for shutdown request
+                if shutdown_requested:
+                    print("\n⚠️  Shutdown requested - stopping presses")
+                    raise KeyboardInterrupt
                     press_id = PRESS_IDS[press_num]
                     logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
                     
@@ -875,6 +908,10 @@ def main():
                         first_movement = True
                         
                         for force_step, target_force in enumerate(target_forces):
+                            # Check for shutdown request
+                            if shutdown_requested:
+                                print("\n⚠️  Shutdown requested - stopping force steps")
+                                raise KeyboardInterrupt
                             logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_force_{target_force:.1f}N")
                             print(f"  Target force: {target_force:.1f} N (step {force_step + 1}/{len(target_forces)})")
                             
@@ -883,6 +920,11 @@ def main():
                             iteration = 0
                             
                             while iteration < max_iterations:
+                                # Check for shutdown request
+                                if shutdown_requested:
+                                    print("\n⚠️  Shutdown requested - stopping force control loop")
+                                    raise KeyboardInterrupt
+                                
                                 # Check current position for safety
                                 current_state = r.getState()
                                 current_z = current_state.T[2, 3]
