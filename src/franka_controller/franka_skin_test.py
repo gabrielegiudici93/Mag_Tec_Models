@@ -799,7 +799,7 @@ def main():
                         # Get current Z position for tracking indentation (should be at reference_initial_z)
                         start_state = r.getState()
                         start_z = start_state.T[2, 3]
-                        max_indentation = 0.005  # 5mm safety limit
+                        max_indentation = 0.010  # 10mm safety limit (5mm initial lift + 5mm safety margin)
                         
                         print(f"Press {press_id} - Force-controlled pressing: {target_forces}N")
                         print(f"  Starting from Z position: {start_z:.6f}m")
