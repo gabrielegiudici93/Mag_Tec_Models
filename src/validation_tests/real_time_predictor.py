@@ -151,6 +151,7 @@ class SensorReader:
     def _ft_sensor_loop(self):
         """FT sensor reading loop."""
         try:
+            print(f"[FT Thread] Starting FT sensor initialization on {FT_PORT}...")
             # Initialize FT sensor
             ser_tmp = serial.Serial(port=FT_PORT, baudrate=FT_BAUDRATE, bytesize=8, parity='N', stopbits=1, timeout=1)
             ser_tmp.write(bytearray([0xff]*50))
@@ -168,16 +169,21 @@ class SensorReader:
             
             self.ft_ser = serial.Serial(port=FT_PORT, baudrate=FT_BAUDRATE, bytesize=8, parity='N', stopbits=1, timeout=1)
             STARTBYTES = bytes([0x20, 0x4e])
+            print(f"[FT Thread] Reading initial data for zero reference...")
             self.ft_ser.read_until(STARTBYTES)
             data = self.ft_ser.read_until(STARTBYTES)
             dataArray = bytearray(data)
             dataArray = STARTBYTES + dataArray[:-2]
             
             if not self._crc_check(dataArray):
-                print("CRC ERROR on ZeroRef")
+                print("[FT Thread] CRC ERROR on ZeroRef")
+                with self.ft_lock:
+                    self.ft_data[:] = [float('nan')] * 6
                 return
             
             zeroRef = self._force_from_serial_message(dataArray)
+            print(f"[FT Thread] Zero reference set: {zeroRef}")
+            print(f"[FT Thread] Starting real-time reading loop...")
             
             while self.running:
                 data = self.ft_ser.read_until(STARTBYTES)
@@ -188,6 +194,11 @@ class SensorReader:
                     continue
                 
                 raw_force = self._force_from_serial_message(dataArray, zeroRef)
+                
+                # Debug: print first few readings
+                read_count += 1
+                if read_count <= 5:
+                    print(f"[FT Thread] Reading #{read_count}: Fx={raw_force[0]:.4f}N, Fy={raw_force[1]:.4f}N, Fz={raw_force[2]:.4f}N")
                 
                 # Store raw values (not filtered) for display in GUI
                 # This ensures we always see the actual sensor values, even if small
@@ -1356,8 +1367,23 @@ class RealTimePredictorGUI:
                 if np.isnan(value):
                     self.ft_labels[i].config(text=f"{name}: ERROR", foreground="red")
                 else:
+                    # Always show the value, even if small
                     color = "red" if abs(value) > 1.0 else "black"
                     self.ft_labels[i].config(text=f"{name}: {value:7.3f}", foreground=color)
+            
+            # Debug: print FT values occasionally (every 100 updates = ~5 seconds at 50ms interval)
+            if not hasattr(self, '_ft_debug_counter'):
+                self._ft_debug_counter = 0
+            self._ft_debug_counter += 1
+            if self._ft_debug_counter % 100 == 0:
+                print(f"[GUI Update] FT values: Fx={ft_data[0]:.4f}N, Fy={ft_data[1]:.4f}N, Fz={ft_data[2]:.4f}N")
+            
+            # Debug: print FT values occasionally (every 100 updates = ~5 seconds at 50ms interval)
+            if not hasattr(self, '_ft_debug_counter'):
+                self._ft_debug_counter = 0
+            self._ft_debug_counter += 1
+            if self._ft_debug_counter % 100 == 0:
+                print(f"[GUI Update] FT values: Fx={ft_data[0]:.4f}N, Fy={ft_data[1]:.4f}N, Fz={ft_data[2]:.4f}N")
             
             # Update StretchMagTec sensor display
             for sensor_id in range(STRETCHMAGTEC_SENSORS):
