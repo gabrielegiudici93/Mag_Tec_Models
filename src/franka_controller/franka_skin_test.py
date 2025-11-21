@@ -677,9 +677,9 @@ def main():
         print("⚠️  No positions to test - calibration will be done at current position")
         rotation_matrix = R.from_euler('x', 180, degrees=True).as_matrix()
     
-    # Initial calibrations (ALWAYS done at start, at 5mm above target)
+    # Initial calibrations (ALWAYS done at start, at target position)
     print("\n" + "="*70)
-    print("INITIAL SENSOR CALIBRATION (at 5mm above target position)")
+    print("INITIAL SENSOR CALIBRATION (at target position)")
     print("="*70)
     
     # Temporarily enable calibration objects for initial calibration
