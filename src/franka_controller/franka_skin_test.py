@@ -594,7 +594,7 @@ ft_thread = None
 stretchmagtec_reader = None
 
 def main():
-    global ft_thread, stretchmagtec_reader
+    global ft_thread, stretchmagtec_reader, logger, r
     
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
@@ -610,9 +610,16 @@ def main():
     time.sleep(2)
 
     # Initialize robot
+    r = None
     print(f"Connecting to robot at {ROBOT_IP}...")
-    r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
-    print("Robot connected successfully")
+    try:
+        r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
+        print("Robot connected successfully")
+    except KeyboardInterrupt:
+        raise  # Re-raise to be caught by outer handler
+    except Exception as e:
+        print(f"Error connecting to robot: {e}")
+        raise
     
     # Determine target position for calibration (first position to test)
     position_ids_to_test = get_positions_to_test()
@@ -1254,4 +1261,38 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
+        
+        # Stop all threads
+        if 'ft_thread' in globals() and ft_thread is not None:
+            print("  Stopping FT sensor thread...")
+            ft_thread.running = False
+            if ft_thread.is_alive():
+                ft_thread.join(timeout=2.0)
+        
+        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
+            print("  Stopping StretchMagTec sensor thread...")
+            stretchmagtec_reader.running = False
+            if stretchmagtec_reader.is_alive():
+                stretchmagtec_reader.join(timeout=2.0)
+        
+        # Stop logger if it exists
+        if 'logger' in globals() and logger is not None:
+            print("  Stopping data logger...")
+            logger.stop()
+            if logger.is_alive():
+                logger.join(timeout=2.0)
+        
+        # Stop robot if it exists
+        if 'r' in globals() and r is not None:
+            print("  Stopping robot...")
+            try:
+                r.stop()
+            except:
+                pass
+        
+        print("  Shutdown complete.")
+        sys.exit(0)

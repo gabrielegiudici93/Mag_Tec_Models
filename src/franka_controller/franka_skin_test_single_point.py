@@ -658,6 +658,10 @@ def run_data_collection(collection_done_event: threading.Event):
     """
     try:
         runpy.run_module('franka_controller.franka_skin_test', run_name='__main__', alter_sys=True)
+    except KeyboardInterrupt:
+        print("\n[Single Point] KeyboardInterrupt detected in data collection thread")
+        collection_done_event.set()
+        raise  # Re-raise to propagate to main thread
     except SystemExit:
         pass
     finally:
