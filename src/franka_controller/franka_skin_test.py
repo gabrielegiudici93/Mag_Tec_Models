@@ -850,10 +850,11 @@ def main():
                 
                 # Perform press cycles at this position
                 for press_num in range(NUMBER_OF_PRESSES):
-                # Check for shutdown request
-                if shutdown_requested:
-                    print("\n⚠️  Shutdown requested - stopping presses")
-                    raise KeyboardInterrupt
+                    # Check for shutdown request
+                    if shutdown_requested:
+                        print("\n⚠️  Shutdown requested - stopping presses")
+                        raise KeyboardInterrupt
+                    
                     press_id = PRESS_IDS[press_num]
                     logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
                     
