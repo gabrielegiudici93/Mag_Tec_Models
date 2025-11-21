@@ -188,11 +188,15 @@ class SensorReader:
                     continue
                 
                 raw_force = self._force_from_serial_message(dataArray, zeroRef)
+                
+                # Store raw values (not filtered) for display in GUI
+                # This ensures we always see the actual sensor values, even if small
+                with self.ft_lock:
+                    self.ft_data[:] = raw_force  # Use raw values, not filtered
+                
+                # Apply noise threshold for buffer (for plotting) - but keep raw for display
                 ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
                 
-                with self.ft_lock:
-                    self.ft_data[:] = ft_cleaned
-                    
                 # Add to buffer for plotting
                 current_time = time.time()
                 if len(self.time_buffer) >= self.max_buffer_size:
@@ -204,6 +208,11 @@ class SensorReader:
                 
         except Exception as e:
             print(f"FT Sensor error: {e}")
+            import traceback
+            traceback.print_exc()
+            # Set error flag so GUI can show it
+            with self.ft_lock:
+                self.ft_data[:] = [float('nan')] * 6  # Mark as error
         finally:
             if self.ft_ser:
                 try:
@@ -1343,8 +1352,12 @@ class RealTimePredictorGUI:
             # Update FT sensor display
             ft_names = ["Fx (N)", "Fy (N)", "Fz (N)", "Tx (Nm)", "Ty (Nm)", "Tz (Nm)"]
             for i, (name, value) in enumerate(zip(ft_names, ft_data)):
-                color = "red" if abs(value) > 1.0 else "black"
-                self.ft_labels[i].config(text=f"{name}: {value:7.3f}", foreground=color)
+                # Check if value is NaN (error condition)
+                if np.isnan(value):
+                    self.ft_labels[i].config(text=f"{name}: ERROR", foreground="red")
+                else:
+                    color = "red" if abs(value) > 1.0 else "black"
+                    self.ft_labels[i].config(text=f"{name}: {value:7.3f}", foreground=color)
             
             # Update StretchMagTec sensor display
             for sensor_id in range(STRETCHMAGTEC_SENSORS):
