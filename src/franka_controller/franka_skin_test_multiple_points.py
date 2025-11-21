@@ -43,7 +43,7 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # SINGLE-POINT CONFIGURATION AND TEST PARAMETERS
 # =============================================================================
 TARGET_POSITION_ID = 32
-TARGET_POSITION_COORDS = [0.496776, 0.438500, 0.031811]  # Corrected X, Y coordinates; Z increased by 0.5mm (0.0005m)
+TARGET_POSITION_COORDS = [0.495774, 0.440503, 0.034311]  # New center position (already lifted, no additional 5mm needed)
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
 BASE_EW_OFFSET = 0.0050  # 5.0 mm

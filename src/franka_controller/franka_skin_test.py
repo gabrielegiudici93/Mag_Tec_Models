@@ -660,15 +660,15 @@ def main():
         # Set "Z-down" orientation
         rotation_matrix = R.from_euler('x', 180, degrees=True).as_matrix()
         
-        # Move to calibration position (5mm above target)
+        # Move to calibration position (at target position - already lifted)
         calibration_position = np.array(target_position).copy()
-        calibration_position[2] += 0.005  # Lift 5mm above target
+        # No additional lift needed - position is already at correct height
         
         calibration_pose = np.eye(4)
         calibration_pose[:3, :3] = rotation_matrix
         calibration_pose[:3, 3] = calibration_position
         
-        print(f"\nMoving to calibration position: 5mm above target position {first_position_id} ({center_offset})")
+        print(f"\nMoving to calibration position: target position {first_position_id} ({center_offset})")
         print(f"Calibration coordinates: [{calibration_position[0]:.6f}, {calibration_position[1]:.6f}, {calibration_position[2]:.6f}]")
         r.move("absolute", calibration_pose, ABSOLUTE_MOVEMENT_DURATION)
         time.sleep(1.0)  # Wait for stabilization
@@ -831,20 +831,12 @@ def main():
                 
                 # For force-controlled pressing: get the ORIGINAL starting Z position ONCE before all presses
                 # This ensures all presses start from and return to the same position
-                # INCREASE by 5mm to avoid starting with force already at 0.8N
+                # Position is already at correct height, no additional lift needed
                 reference_initial_z = None
                 if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
                     reference_state = r.getState()
-                    reference_initial_z = reference_state.T[2, 3] + 0.005  # Add 5mm (0.005m) to starting position
-                    print(f"Reference Z position for all presses: {reference_initial_z:.6f}m (increased by 5mm from {reference_state.T[2, 3]:.6f}m)")
-                    # Move to the increased position
-                    current_state = r.getState()
-                    current_z = current_state.T[2, 3]
-                    z_diff = reference_initial_z - current_z
-                    if abs(z_diff) > 0.0001:  # More than 0.1mm difference
-                        print(f"  Moving up 5mm to starting position...")
-                        move_relative(r, 0, 0, z_diff, MOVEMENT_DURATION)
-                        time.sleep(0.5)
+                    reference_initial_z = reference_state.T[2, 3]  # Use current position (already at correct height)
+                    print(f"Reference Z position for all presses: {reference_initial_z:.6f}m")
                 
                 # Perform press cycles at this position
                 for press_num in range(NUMBER_OF_PRESSES):
