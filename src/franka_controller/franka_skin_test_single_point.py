@@ -21,6 +21,7 @@ import time
 from datetime import datetime
 from typing import List, Tuple
 import copy
+import signal
 
 import numpy as np
 import tkinter as tk
@@ -668,7 +669,18 @@ def run_data_collection(collection_done_event: threading.Event):
         collection_done_event.set()
 
 
+def signal_handler(signum, frame):
+    """Handle SIGINT (Ctrl+C) signal - must be in main thread"""
+    print("\n\n⚠️  SIGINT (Ctrl+C) received - requesting shutdown...")
+    # Import here to avoid circular import
+    import franka_controller.franka_skin_test as skin_test
+    skin_test.set_shutdown_requested()
+
+
 def execute_collection():
+    # Set up signal handler for Ctrl+C in main thread
+    signal.signal(signal.SIGINT, signal_handler)
+    
     collection_done = threading.Event()
     collection_thread = threading.Thread(
         target=run_data_collection,
@@ -682,8 +694,12 @@ def execute_collection():
         launch_predictor_gui(collection_done)
     else:
         print("GUI disabled; collecting data without live visualization...")
-        while not collection_done.wait(timeout=0.5):
-            pass
+        try:
+            while not collection_done.wait(timeout=0.5):
+                pass
+        except KeyboardInterrupt:
+            print("\n[Single Point] KeyboardInterrupt in main thread")
+            collection_done.set()
 
     collection_thread.join()
 

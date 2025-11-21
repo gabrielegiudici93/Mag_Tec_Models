@@ -32,7 +32,6 @@ from scipy.spatial.transform import Rotation as R
 import os
 import sys
 import json
-import signal
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -597,10 +596,9 @@ logger = None
 r = None
 shutdown_requested = False
 
-def signal_handler(signum, frame):
-    """Handle SIGINT (Ctrl+C) signal"""
+def set_shutdown_requested():
+    """Set shutdown flag - can be called from signal handler in main thread"""
     global shutdown_requested
-    print("\n\n⚠️  SIGINT (Ctrl+C) received - requesting shutdown...")
     shutdown_requested = True
     # Stop threads immediately
     if ft_thread is not None:
@@ -618,8 +616,8 @@ def signal_handler(signum, frame):
 def main():
     global ft_thread, stretchmagtec_reader, logger, r, shutdown_requested
     
-    # Set up signal handler for Ctrl+C
-    signal.signal(signal.SIGINT, signal_handler)
+    # Note: signal handler should be set in the main thread (e.g., in single_point.py)
+    # This function can be called from a sub-thread, so we don't set signal handler here
     
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
