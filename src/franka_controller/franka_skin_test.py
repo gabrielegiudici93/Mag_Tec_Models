@@ -304,11 +304,13 @@ class FTSensorThread(threading.Thread):
                 if not crcCheck(dataArray):
                     continue
                 raw_force = forceFromSerialMessage(dataArray, zeroRef)
-                ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
                 
-                # Store both raw and compensated readings
+                # Store raw values (not filtered) for GUI display
+                # Filtering is only for noise reduction in plots, but GUI should show actual values
                 with self.lock:
-                    self.raw_force_reading = ft_cleaned.copy()
+                    self.raw_force_reading = raw_force.copy()  # Store raw (unfiltered) for GUI
+                    # Apply noise threshold for compensated reading (used in logging)
+                    ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
                     self.force_reading = ft_calibration.compensate_force(ft_cleaned)
                 ft_data_ready_event.set()
             ser.close()
@@ -531,7 +533,13 @@ def move_relative(r, dx, dy, dz, duration=MOVEMENT_DURATION):
 # =============================================================================
 # MAIN DATA COLLECTION
 # =============================================================================
+# Global variables to expose to GUI adapter
+ft_thread = None
+stretchmagtec_reader = None
+
 def main():
+    global ft_thread, stretchmagtec_reader
+    
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
 

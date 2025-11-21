@@ -63,7 +63,7 @@ BASE_OFFSETS = {
 }
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [0.00]
+STRETCH_LEVELS = [0.00, 0.10, 0.20]
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 PROMPT_FOR_RUN_LABEL = False  # Run label generated automatically
 
@@ -72,7 +72,7 @@ FORCE_CONTROLLED_PRESS = True  # Use force-controlled pressing
 FORCE_MIN = 0.0  # Start from 0.0N
 FORCE_MAX = 3.0  # Up to 3.0N
 FORCE_STEP_SIZE = 0.1  # Step size 0.1N
-FORCE_STEP_DELAY = 0.2  # Wait time at each force step (0.2s for data collection)
+FORCE_STEP_DELAY = 0.1 # Wait time at each force step (0.2s for data collection)
 FORCE_TOLERANCE = 0.01  # Tolerance for reaching target force
 
 # Pressing profile configuration (legacy - used only if FORCE_CONTROLLED_PRESS is False)
@@ -185,9 +185,17 @@ class SkinTestSensorAdapter:
                 if module and hasattr(module, 'ft_thread'):
                     try:
                         ft_thread = getattr(module, 'ft_thread')
-                        if ft_thread is not None and hasattr(ft_thread, 'get_ft'):
+                        if ft_thread is not None and hasattr(ft_thread, 'get_raw_ft'):
+                            # Use raw FT values (not filtered) for real-time GUI display
+                            ft_reading = np.array(ft_thread.get_raw_ft(), dtype=float)
+                        elif ft_thread is not None and hasattr(ft_thread, 'get_ft'):
+                            # Fallback to compensated values if raw not available
                             ft_reading = np.array(ft_thread.get_ft(), dtype=float)
-                    except Exception:
+                    except Exception as e:
+                        # Debug: print error if FT reading fails
+                        if not hasattr(self, '_ft_error_printed'):
+                            print(f"[SkinTestSensorAdapter] Error reading FT: {e}")
+                            self._ft_error_printed = True
                         ft_reading = None
                 if ft_reading is None:
                     ft_reading = np.zeros(6)
