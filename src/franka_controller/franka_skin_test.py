@@ -712,9 +712,13 @@ def main():
         print("Proceeding with data collection.\n")
     
     # Start continuous logger
-    logger = ContinuousLoggerThread(r, ft_thread)
-    logger.daemon = True
-    logger.start()
+    logger = None
+    try:
+        logger = ContinuousLoggerThread(r, ft_thread)
+        logger.daemon = True
+        logger.start()
+    except KeyboardInterrupt:
+        raise  # Re-raise to be caught by outer handler
 
     try:
         # Determine which positions to test from config (already done above, but get offsets)

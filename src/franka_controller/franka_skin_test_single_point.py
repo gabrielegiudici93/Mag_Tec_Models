@@ -771,6 +771,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
+        print("  Stopping data collection and GUI...")
+        sys.exit(0)
 
 
