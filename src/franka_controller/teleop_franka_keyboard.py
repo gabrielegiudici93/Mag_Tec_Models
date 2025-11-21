@@ -20,9 +20,13 @@ import validation_tests.real_time_predictor as predictor
 # TELEOP CONFIGURATION
 # =============================================================================
 # Select which position to start teleoperation from
-SELECTED_POSITION_ID = 23  # Default to position 11 (row 1, col 1)
+SELECTED_POSITION_ID = 32  # Default to position 32 (center position for single point test)
 SELECTED_OFFSET = 'center'  # Default to center offset
 ENABLE_GUI = True  # Set to False to disable real-time visualization
+
+# Update position 32 to match single point test coordinates (if not already set)
+if 32 not in MAIN_GRID_POSITIONS or MAIN_GRID_POSITIONS[32] != [0.495774, 0.440503, 0.034311]:
+    MAIN_GRID_POSITIONS[32] = [0.495774, 0.440503, 0.034311]
 
 if SELECTED_POSITION_ID not in MAIN_GRID_POSITIONS:
     raise ValueError(f"Invalid position ID: {SELECTED_POSITION_ID}. Available IDs: {list(MAIN_GRID_POSITIONS.keys())}")
