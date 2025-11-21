@@ -1376,14 +1376,9 @@ class RealTimePredictorGUI:
                 self._ft_debug_counter = 0
             self._ft_debug_counter += 1
             if self._ft_debug_counter % 100 == 0:
-                print(f"[GUI Update] FT values: Fx={ft_data[0]:.4f}N, Fy={ft_data[1]:.4f}N, Fz={ft_data[2]:.4f}N")
-            
-            # Debug: print FT values occasionally (every 100 updates = ~5 seconds at 50ms interval)
-            if not hasattr(self, '_ft_debug_counter'):
-                self._ft_debug_counter = 0
-            self._ft_debug_counter += 1
-            if self._ft_debug_counter % 100 == 0:
-                print(f"[GUI Update] FT values: Fx={ft_data[0]:.4f}N, Fy={ft_data[1]:.4f}N, Fz={ft_data[2]:.4f}N")
+                print(f"[GUI Update #{self._ft_debug_counter}] FT values: Fx={ft_data[0]:.4f}N, Fy={ft_data[1]:.4f}N, Fz={ft_data[2]:.4f}N")
+                print(f"[GUI Update] FT thread alive: {self.sensor_reader.ft_thread.is_alive() if self.sensor_reader.ft_thread else False}")
+                print(f"[GUI Update] FT running: {self.sensor_reader.running}")
             
             # Update StretchMagTec sensor display
             for sensor_id in range(STRETCHMAGTEC_SENSORS):
