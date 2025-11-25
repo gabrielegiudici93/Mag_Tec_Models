@@ -24,6 +24,7 @@ import serial
 import threading
 import re
 from datetime import datetime
+from collections import deque
 import h5py
 import libscrc
 import minimalmodbus as mm
@@ -506,20 +507,100 @@ class StretchMagTecSerialReader(threading.Thread):
         self.baud = baud
         self.running = True
         self.ser = None
+        
+        # Median filter for outlier rejection (per sensor/channel) to filter spikes during robot movement
+        # Increased size to better filter spikes during robot lift movements
+        self.median_filter_size = 7
+        self.median_filter_buffer = {}
+        for sensor_id in range(STRETCHMAGTEC_SENSORS):
+            for channel_id in range(STRETCHMAGTEC_CHANNELS):
+                self.median_filter_buffer[(sensor_id, channel_id)] = deque(maxlen=self.median_filter_size)
+        
+        # Track last valid reading for outlier detection and spike rejection
+        self.last_valid = np.zeros((STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS))
+        
+        # Threshold for per-sensor spike detection (after median filter)
+        # If a sensor value changes too much from last valid, keep last valid
+        self.SPIKE_THRESHOLD = 30000  # Threshold for individual sensor spikes
 
     def run(self):
         global stretchmagtec_data
         try:
             self.ser = serial.Serial(self.port, self.baud, timeout=1)
             time.sleep(2)  # Wait for Arduino to initialize
-            while self.running:
+            while self.running and not shutdown_requested:
                 if self.ser.in_waiting > 0:
                     line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                     sensor_values = parse_stretchmagtec_line(line)
                     if sensor_values is not None:
-                        with stretchmagtec_data_lock:
-                            stretchmagtec_data[:, :] = sensor_values
-                        stretchmagtec_ready_event.set()
+                        # Apply median filter to remove transient spikes (especially during robot movement)
+                        filtered_values = np.zeros_like(sensor_values)
+                        
+                        # Filter each sensor/channel independently
+                        # Optimized: pre-allocate array and use vectorized operations where possible
+                        for sensor_id in range(STRETCHMAGTEC_SENSORS):
+                            for channel_id in range(STRETCHMAGTEC_CHANNELS):
+                                raw_value = sensor_values[sensor_id, channel_id]
+                                key = (sensor_id, channel_id)
+                                
+                                # Add new value to median filter buffer
+                                self.median_filter_buffer[key].append(raw_value)
+                                
+                                # Use median of buffer if we have enough samples, otherwise use raw value
+                                # Optimized: use deque directly with numpy (faster)
+                                buffer_len = len(self.median_filter_buffer[key])
+                                if buffer_len >= 3:
+                                    # Convert deque to numpy array efficiently
+                                    buffer_array = np.fromiter(self.median_filter_buffer[key], dtype=np.float64, count=buffer_len)
+                                    median_value = np.median(buffer_array)
+                                    filtered_values[sensor_id, channel_id] = median_value
+                                else:
+                                    # Not enough samples yet, use raw value
+                                    filtered_values[sensor_id, channel_id] = raw_value
+                        
+                        # Additional spike rejection: check individual sensors for spikes after median filter
+                        # This catches spikes during robot lift that might pass the median filter
+                        if np.any(self.last_valid != 0):
+                            for sensor_id in range(STRETCHMAGTEC_SENSORS):
+                                for channel_id in range(STRETCHMAGTEC_CHANNELS):
+                                    current_val = filtered_values[sensor_id, channel_id]
+                                    last_val = self.last_valid[sensor_id, channel_id]
+                                    
+                                    # If the change is too large (spike), keep the last valid value
+                                    if abs(current_val - last_val) > self.SPIKE_THRESHOLD:
+                                        filtered_values[sensor_id, channel_id] = last_val
+                        
+                        # Outlier detection: check if all sensors spiked simultaneously (EMI from robot motors)
+                        is_outlier = False
+                        if np.any(self.last_valid != 0):
+                            diff = np.abs(filtered_values - self.last_valid)
+                            OUTLIER_THRESHOLD = 40000  # Reduced threshold to catch more EMI spikes during lift
+                            spiked_sensors = 0
+                            
+                            for i in range(STRETCHMAGTEC_SENSORS):
+                                if (diff[i, 0] > OUTLIER_THRESHOLD and 
+                                    diff[i, 1] > OUTLIER_THRESHOLD and 
+                                    diff[i, 2] > OUTLIER_THRESHOLD):
+                                    spiked_sensors += 1
+                            
+                            # If most sensors spiked simultaneously, it's likely EMI from robot movement
+                            # Reduced threshold to catch spikes during lift (when motors are active)
+                            if spiked_sensors >= 12:  # Most sensors (was 15, now 12 to catch more cases)
+                                is_outlier = True
+                        
+                        # Only update data if not an outlier and not shutting down
+                        if not is_outlier and not shutdown_requested:
+                            # Minimize lock time - only copy data, do heavy operations outside lock
+                            with stretchmagtec_data_lock:
+                                stretchmagtec_data[:, :] = filtered_values
+                            # Update last_valid outside lock to avoid blocking
+                            self.last_valid = filtered_values.copy()
+                            stretchmagtec_ready_event.set()
+                
+                # Small sleep to avoid CPU spinning, but check shutdown
+                if shutdown_requested:
+                    break
+                time.sleep(0.001)  # 1ms sleep - same as visualize_sensors_only.py
         except Exception as e:
             print(f"StretchMagTec serial error: {e}")
         finally:
@@ -555,10 +636,27 @@ class ContinuousLoggerThread(threading.Thread):
         while self.running:
             loop_start = time.time()
             timestamp = datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3]
+            
+            # Read robot state first (this can be slow during movement, but doesn't block sensor thread)
             cur_state = self.robot.getState()
             current_pos = cur_state.T[:3, 3]
             ft = self.ft_sensor.get_ft()
-            sensors = read_stretchmagtec_data()
+            
+            # Read sensor data with minimal lock contention
+            # Use timeout to avoid blocking sensor thread if it's updating
+            sensors = None
+            try:
+                if stretchmagtec_data_lock.acquire(timeout=0.001):  # 1ms timeout - don't block sensor thread
+                    try:
+                        sensors = stretchmagtec_data.copy()
+                    finally:
+                        stretchmagtec_data_lock.release()
+                else:
+                    # Lock timeout - sensor thread is busy, use zeros to avoid blocking
+                    # This prevents the logger from blocking the sensor thread
+                    sensors = np.zeros((STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS))
+            except Exception:
+                sensors = np.zeros((STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS))
             
             # Apply StretchMagTec calibration compensation
             if sensors is not None:
@@ -578,13 +676,97 @@ class ContinuousLoggerThread(threading.Thread):
         self.running = False
 
 # =============================================================================
-# ROBOT MOVEMENT FUNCTIONS
+# ROBOT MOVEMENT FUNCTIONS WITH REFLEX ERROR HANDLING
 # =============================================================================
+def safe_robot_move(r, move_type, target, duration=None, max_retries=3):
+    """
+    Safely move robot with retry logic for reflex errors.
+    
+    This function handles robot reflex mode errors by prompting the user to unlock
+    and reset the robot, then retrying the movement. This ensures data collection
+    can continue without losing already collected data.
+    
+    Args:
+        r: Robot instance
+        move_type: "absolute" or "relative"
+        target: Target pose (4x4 matrix for absolute) or delta transform (4x4 matrix for relative)
+        duration: Movement duration (optional)
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Returns:
+        True if movement succeeded, False otherwise
+    
+    Raises:
+        Exception: If movement fails after all retries (non-reflex errors)
+    """
+    for attempt in range(max_retries):
+        # Check for shutdown before each attempt
+        if shutdown_requested:
+            print("   🛑 Shutdown requested - aborting movement")
+            try:
+                r.stop()  # Stop robot immediately
+            except:
+                pass
+            raise KeyboardInterrupt("Shutdown requested during movement")
+        
+        try:
+            if duration is not None:
+                r.move(move_type, target, duration)
+            else:
+                r.move(move_type, target)
+            
+            # Check again after movement (in case shutdown was requested during movement)
+            if shutdown_requested:
+                print("   🛑 Shutdown requested - movement completed but stopping")
+                try:
+                    r.stop()  # Stop robot immediately
+                except:
+                    pass
+                raise KeyboardInterrupt("Shutdown requested after movement")
+            
+            return True
+        except Exception as e:
+            error_str = str(e)
+            print(f"   ❌ Movement attempt {attempt + 1}/{max_retries} failed: {error_str}")
+            
+            # Check if it's a reflex mode error
+            if "Reflex" in error_str or "reflex" in error_str.lower():
+                print("   🛑 Robot in reflex mode (safety stop).")
+                print("   📊 Data collection is paused but data already collected is safe.")
+                print("   🔓 Please unlock the safety button on the robot and reset it, then press Enter to continue...")
+                try:
+                    input()
+                    print("   ✅ Robot reset acknowledged, retrying movement...")
+                    time.sleep(3)  # Give robot time to fully reset
+                    # Continue to retry
+                except KeyboardInterrupt:
+                    print("   ⚠️  User interrupted during reflex recovery.")
+                    return False
+            elif attempt < max_retries - 1:
+                # Non-reflex error - retry with delay
+                print(f"   🔄 Retrying in 2 seconds...")
+                time.sleep(2)
+            else:
+                # Final attempt failed
+                print(f"   ❌ Failed to complete movement after {max_retries} attempts")
+                raise  # Re-raise the exception for non-reflex errors
+    
+    return False
+
 def move_relative(r, dx, dy, dz, duration=MOVEMENT_DURATION):
-    """Move robot relative to current position"""
+    """Move robot relative to current position with reflex error handling"""
+    # Check shutdown BEFORE starting movement
+    if shutdown_requested:
+        print("   🛑 Shutdown requested - aborting relative movement")
+        try:
+            r.stop()  # Stop robot immediately
+        except:
+            pass
+        raise KeyboardInterrupt("Shutdown requested before movement")
+    
     delta_transform = np.eye(4)
     delta_transform[:3, 3] = [dx, dy, dz]
-    r.move("relative", delta_transform, duration)
+    safe_robot_move(r, "relative", delta_transform, duration=duration)
 
 # =============================================================================
 # MAIN DATA COLLECTION
@@ -598,8 +780,21 @@ shutdown_requested = False
 
 def set_shutdown_requested():
     """Set shutdown flag - can be called from signal handler in main thread"""
-    global shutdown_requested
+    global shutdown_requested, r, ft_thread, stretchmagtec_reader, logger
     shutdown_requested = True
+    
+    print("\n🛑 Emergency stop requested - stopping robot and all threads...")
+    
+    # Stop robot IMMEDIATELY - this is critical for safety
+    # This must happen first, before stopping threads
+    if r is not None:
+        try:
+            print("  Stopping robot movement immediately...")
+            r.stop()
+            print("  ✅ Robot stopped")
+        except Exception as e:
+            print(f"  ⚠️  Error stopping robot: {e}")
+    
     # Stop threads immediately
     if ft_thread is not None:
         ft_thread.running = False
@@ -607,17 +802,15 @@ def set_shutdown_requested():
         stretchmagtec_reader.running = False
     if logger is not None:
         logger.running = False
-    if r is not None:
-        try:
-            r.stop()
-        except:
-            pass
 
 def main():
     global ft_thread, stretchmagtec_reader, logger, r, shutdown_requested
     
     # Note: signal handler should be set in the main thread (e.g., in single_point.py)
     # This function can be called from a sub-thread, so we don't set signal handler here
+    
+    # Reset shutdown flag at start
+    shutdown_requested = False
     
     stretchmagtec_ready_event.clear()
     ft_data_ready_event.clear()
@@ -632,17 +825,48 @@ def main():
     ft_thread.start()
     time.sleep(2)
 
-    # Initialize robot
+    # Initialize robot with Reflex error handling
     r = None
     print(f"Connecting to robot at {ROBOT_IP}...")
-    try:
-        r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
-        print("Robot connected successfully")
-    except KeyboardInterrupt:
-        raise  # Re-raise to be caught by outer handler
-    except Exception as e:
-        print(f"Error connecting to robot: {e}")
-        raise
+    max_connection_retries = 5
+    for attempt in range(max_connection_retries):
+        try:
+            r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
+            print("Robot connected successfully")
+            break  # Success, exit retry loop
+        except KeyboardInterrupt:
+            raise  # Re-raise to be caught by outer handler
+        except Exception as e:
+            error_str = str(e)
+            print(f"Error connecting to robot (attempt {attempt + 1}/{max_connection_retries}): {error_str}")
+            
+            # Check if it's a reflex mode error
+            if "Reflex" in error_str or "reflex" in error_str.lower():
+                print("🛑 Robot is in reflex mode (safety stop).")
+                print("📊 Please unlock the safety button on the robot and reset it.")
+                if attempt < max_connection_retries - 1:
+                    print("🔓 After resetting, press Enter to retry connection...")
+                    try:
+                        input()
+                        print("✅ Robot reset acknowledged, retrying connection...")
+                        time.sleep(3)  # Give robot time to fully reset
+                    except KeyboardInterrupt:
+                        print("⚠️  User interrupted during reflex recovery.")
+                        raise
+                else:
+                    print("❌ Failed to connect after all retry attempts")
+                    raise RuntimeError(f"Could not connect to robot after {max_connection_retries} attempts: {error_str}")
+            elif attempt < max_connection_retries - 1:
+                # Non-reflex error - retry with delay
+                print(f"🔄 Retrying connection in 2 seconds...")
+                time.sleep(2)
+            else:
+                # Final attempt failed
+                print(f"❌ Failed to connect after {max_connection_retries} attempts")
+                raise
+    
+    if r is None:
+        raise RuntimeError("Failed to initialize robot connection")
     
     # Determine target position for calibration (first position to test)
     position_ids_to_test = get_positions_to_test()
@@ -670,7 +894,7 @@ def main():
         
         print(f"\nMoving to calibration position: target position {first_position_id} ({center_offset})")
         print(f"Calibration coordinates: [{calibration_position[0]:.6f}, {calibration_position[1]:.6f}, {calibration_position[2]:.6f}]")
-        r.move("absolute", calibration_pose, ABSOLUTE_MOVEMENT_DURATION)
+        safe_robot_move(r, "absolute", calibration_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
         time.sleep(1.0)  # Wait for stabilization
     else:
         # Fallback: use current position
@@ -728,7 +952,7 @@ def main():
         center_pose[:3, 3] = center_position
         
         print(f"\nMoving to center position: [{center_position[0]:.6f}, {center_position[1]:.6f}, {center_position[2]:.6f}]")
-        r.move("absolute", center_pose, ABSOLUTE_MOVEMENT_DURATION)
+        safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
         time.sleep(1.0)  # Wait for stabilization
         print("Proceeding with data collection.\n")
     else:
@@ -815,7 +1039,7 @@ def main():
                     des_pos_fingertip_setup[2, 3] += 0.005
                 
                 # Move to position
-                r.move("absolute", des_pos_fingertip_setup, ABSOLUTE_MOVEMENT_DURATION)
+                safe_robot_move(r, "absolute", des_pos_fingertip_setup, duration=ABSOLUTE_MOVEMENT_DURATION)
                 print(f"Moved to position {position_id} ({row},{col}) - {offset_key}")
                 
                 # Lower 5mm to target position (if we lifted)
@@ -846,120 +1070,164 @@ def main():
                         raise KeyboardInterrupt
                     
                     press_id = PRESS_IDS[press_num]
-                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
                     
                     # Skip first press (discard it)
                     skip_first_press = (press_num == 0)
-                    if skip_first_press:
-                        print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}) - DISCARDING (first press)")
-                    else:
-                        print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id})")
                     
-                    # Calibrate before press (optional, per-position calibration)
-                    if FT_PER_POSITION_CALIBRATION_ENABLED:
-                        ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
-                    if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
-                        stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
+                    # Retry loop for each press - if Reflex error occurs, retry the entire press
+                    max_press_retries = 3
+                    press_success = False
                     
-                    # Perform force-controlled press: stop at 1.0N to 3.0N in 0.1N steps for 1s each
-                    # OR position-controlled press (if FORCE_CONTROLLED_PRESS is False)
-                    if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
-                        # Force-controlled pressing: use config parameters
-                        force_min = getattr(config_module, "FORCE_MIN", 1.0)
-                        force_max = getattr(config_module, "FORCE_MAX", 3.0)
-                        force_step = getattr(config_module, "FORCE_STEP_SIZE", 0.1)
-                        target_forces = np.arange(force_min, force_max + force_step, force_step).tolist()
-                        force_tolerance = getattr(config_module, "FORCE_TOLERANCE", 0.01)
-                        data_collection_duration = getattr(config_module, "FORCE_STEP_DELAY", 1.0)  # Stay at each force level
-                        
-                        # CRITICAL: Return to reference position BEFORE starting this press
-                        # This ensures all presses start from the same position
-                        # NO LIFTING - just return to reference position
-                        if reference_initial_z is not None:
-                            current_state = r.getState()
-                            current_z = current_state.T[2, 3]
-                            z_diff = current_z - reference_initial_z
-                            if abs(z_diff) > 0.0001:  # More than 0.1mm difference
-                                print(f"  Returning to reference position (moving {z_diff*1000:.2f}mm)...")
-                                move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)
-                                time.sleep(0.3)
-                        
-                        # Wait a moment for stabilization
-                        time.sleep(0.2)
-                        
-                        # Get current Z position for tracking indentation (should be at reference_initial_z)
-                        start_state = r.getState()
-                        start_z = start_state.T[2, 3]
-                        max_indentation = 0.010  # 10mm safety limit (5mm initial lift + 5mm safety margin)
-                        
-                        print(f"Press {press_id} - Force-controlled pressing: {target_forces}N")
-                        print(f"  Starting from Z position: {start_z:.6f}m")
-                        
-                        # Flag to track if this is the first movement (for sequence_start)
-                        first_movement = True
-                        
-                        for force_step, target_force in enumerate(target_forces):
-                            # Check for shutdown request
-                            if shutdown_requested:
-                                print("\n⚠️  Shutdown requested - stopping force steps")
-                                raise KeyboardInterrupt
-                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_force_{target_force:.1f}N")
-                            print(f"  Target force: {target_force:.1f} N (step {force_step + 1}/{len(target_forces)})")
+                    for press_retry in range(max_press_retries):
+                        try:
+                            if press_retry > 0:
+                                print(f"\n🔄 Retrying press {press_id} (attempt {press_retry + 1}/{max_press_retries})...")
                             
-                            # Control loop: adjust position to reach target force
-                            max_iterations = 500  # Safety limit
-                            iteration = 0
+                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
                             
-                            while iteration < max_iterations:
-                                # Check for shutdown request
-                                if shutdown_requested:
-                                    print("\n⚠️  Shutdown requested - stopping force control loop")
-                                    raise KeyboardInterrupt
+                            if skip_first_press:
+                                print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}) - DISCARDING (first press)")
+                            else:
+                                print(f"Starting press cycle {press_num + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id})")
+                            
+                            # Calibrate before press (optional, per-position calibration)
+                            if FT_PER_POSITION_CALIBRATION_ENABLED:
+                                ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
+                            if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
+                                stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
+                            
+                            # Perform force-controlled press: stop at 1.0N to 3.0N in 0.1N steps for 1s each
+                            # OR position-controlled press (if FORCE_CONTROLLED_PRESS is False)
+                            if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
+                                # Force-controlled pressing: use config parameters
+                                force_min = getattr(config_module, "FORCE_MIN", 1.0)
+                                force_max = getattr(config_module, "FORCE_MAX", 3.0)
+                                force_step = getattr(config_module, "FORCE_STEP_SIZE", 0.1)
+                                target_forces = np.arange(force_min, force_max + force_step, force_step).tolist()
+                                force_tolerance = getattr(config_module, "FORCE_TOLERANCE", 0.01)
+                                data_collection_duration = getattr(config_module, "FORCE_STEP_DELAY", 1.0)  # Stay at each force level
                                 
-                                # Check current position for safety
-                                current_state = r.getState()
-                                current_z = current_state.T[2, 3]
-                                current_indentation = abs(start_z - current_z)
+                                # CRITICAL: Return to reference position BEFORE starting this press
+                                # This ensures all presses start from the same position
+                                # NO LIFTING - just return to reference position
+                                if reference_initial_z is not None:
+                                    current_state = r.getState()
+                                    current_z = current_state.T[2, 3]
+                                    z_diff = current_z - reference_initial_z
+                                    if abs(z_diff) > 0.0001:  # More than 0.1mm difference
+                                        print(f"  Returning to reference position (moving {z_diff*1000:.2f}mm)...")
+                                        move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)
+                                        time.sleep(0.3)
                                 
-                                # Safety check: stop if maximum indentation exceeded
-                                if current_indentation >= max_indentation:
-                                    print(f"    ⚠️  Safety stop: Maximum indentation ({max_indentation*1000:.1f}mm) reached")
-                                    break
+                                # Wait a moment for stabilization
+                                time.sleep(0.2)
                                 
-                                # Read force (single reading for speed - sensor thread updates continuously)
-                                current_ft = ft_thread.get_ft()
-                                current_fz_abs = abs(current_ft[2])
+                                # Get current Z position for tracking indentation (should be at reference_initial_z)
+                                start_state = r.getState()
+                                start_z = start_state.T[2, 3]
+                                max_indentation = 0.010  # 10mm safety limit (5mm initial lift + 5mm safety margin)
                                 
-                                # Determine movement direction based on current vs target force (using abs values)
-                                # IMPORTANT: If force exceeds target, don't go back - just stop and proceed
-                                if current_fz_abs >= target_force - force_tolerance:
-                                    # Force is at or above target - stop here and proceed (don't go back)
-                                    print(f"    Target reached (or exceeded): {current_fz_abs:.3f} N (indentation: {current_indentation*1000:.2f}mm)")
-                                    break
-                                elif current_fz_abs < target_force - force_tolerance:
-                                    # CRITICAL: Mark the start of data collection IMMEDIATELY before the FIRST movement
-                                    # This ensures the sequence starts exactly when the robot begins pressing
-                                    if first_movement:
-                                        # Print FT sensor values at the beginning of sequence
-                                        current_ft = ft_thread.get_ft()
-                                        print(f"  📊 FT sensor values at sequence start: Fx={current_ft[0]:.4f}N, Fy={current_ft[1]:.4f}N, Fz={current_ft[2]:.4f}N, "
-                                              f"Tx={current_ft[3]:.4f}Nm, Ty={current_ft[4]:.4f}Nm, Tz={current_ft[5]:.4f}Nm")
-                                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_start")
-                                        first_movement = False
+                                print(f"Press {press_id} - Force-controlled pressing: {target_forces}N")
+                                print(f"  Starting from Z position: {start_z:.6f}m")
+                                
+                                # Flag to track if this is the first movement (for sequence_start)
+                                first_movement = True
+                                
+                                for force_step, target_force in enumerate(target_forces):
+                                    # Check for shutdown request
+                                    if shutdown_requested:
+                                        print("\n⚠️  Shutdown requested - stopping force steps")
+                                        raise KeyboardInterrupt
+                                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_force_{target_force:.1f}N")
+                                    print(f"  Target force: {target_force:.1f} N (step {force_step + 1}/{len(target_forces)})")
                                     
-                                    # Force is too low - press down to increase force
-                                    # This is the actual movement - sequence_start is set just before this
-                                    move_relative(r, 0, 0, -0.0001, duration=0.05)  # Move down, faster
-                                    time.sleep(0.05)  # Reduced wait time
-                                
-                                iteration += 1
-                            
-                            if iteration >= max_iterations:
-                                print(f"    ⚠️  Warning: Max iterations reached for {target_force:.1f}N target")
-                            
+                                    # Control loop: adjust position to reach target force
+                                    max_iterations = 500  # Safety limit
+                                    iteration = 0
+                                    
+                                    while iteration < max_iterations:
+                                        # Check for shutdown request
+                                        if shutdown_requested:
+                                            print("\n⚠️  Shutdown requested - stopping force control loop")
+                                            raise KeyboardInterrupt
+                                        
+                                        # Check current position for safety
+                                        current_state = r.getState()
+                                        current_z = current_state.T[2, 3]
+                                        current_indentation = abs(start_z - current_z)
+                                        
+                                        # Safety check: stop if maximum indentation exceeded
+                                        if current_indentation >= max_indentation:
+                                            print(f"    ⚠️  Safety stop: Maximum indentation ({max_indentation*1000:.1f}mm) reached")
+                                            break
+                                        
+                                        # Read force (single reading for speed - sensor thread updates continuously)
+                                        current_ft = ft_thread.get_ft()
+                                        current_fz_abs = abs(current_ft[2])
+                                        
+                                        # Determine movement direction based on current vs target force (using abs values)
+                                        # IMPORTANT: If force exceeds target, don't go back - just stop and proceed
+                                        if current_fz_abs >= target_force - force_tolerance:
+                                            # Force is at or above target - stop here and proceed (don't go back)
+                                            print(f"    Target reached (or exceeded): {current_fz_abs:.3f} N (indentation: {current_indentation*1000:.2f}mm)")
+                                            break
+                                        elif current_fz_abs < target_force - force_tolerance:
+                                            # CRITICAL: Mark the start of data collection IMMEDIATELY before the FIRST movement
+                                            # This ensures the sequence starts exactly when the robot begins pressing
+                                            if first_movement:
+                                                # Print FT sensor values at the beginning of sequence
+                                                current_ft = ft_thread.get_ft()
+                                                print(f"  📊 FT sensor values at sequence start: Fx={current_ft[0]:.4f}N, Fy={current_ft[1]:.4f}N, Fz={current_ft[2]:.4f}N, "
+                                                      f"Tx={current_ft[3]:.4f}Nm, Ty={current_ft[4]:.4f}Nm, Tz={current_ft[5]:.4f}Nm")
+                                                logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_start")
+                                                first_movement = False
+                                            
+                                            # Force is too low - press down to increase force
+                                            # This is the actual movement - sequence_start is set just before this
+                                            # Check shutdown BEFORE movement (critical for Ctrl+C responsiveness)
+                                            if shutdown_requested:
+                                                print("\n⚠️  Shutdown requested - stopping movement immediately")
+                                                r.stop()  # Stop robot immediately
+                                                raise KeyboardInterrupt
+                                            
+                                            move_relative(r, 0, 0, -0.0001, duration=0.05)  # Move down, faster
+                                            
+                                            # Check shutdown AFTER movement too
+                                            if shutdown_requested:
+                                                print("\n⚠️  Shutdown requested - movement completed but stopping")
+                                                r.stop()  # Stop robot immediately
+                                                raise KeyboardInterrupt
+                                            
+                                            time.sleep(0.05)  # Reduced wait time
+                                            
+                                            # Check shutdown during wait
+                                            if shutdown_requested:
+                                                print("\n⚠️  Shutdown requested - stopping during wait")
+                                                r.stop()  # Stop robot immediately
+                                                raise KeyboardInterrupt
+                                        
+                                        iteration += 1
+                                    
+                                    if iteration >= max_iterations:
+                                        print(f"    ⚠️  Warning: Max iterations reached for {target_force:.1f}N target")
+                                    
                             # Stay at this force level for data collection (1 second)
+                            # Check shutdown before and during wait
+                            if shutdown_requested:
+                                print("\n⚠️  Shutdown requested - stopping data collection")
+                                r.stop()  # Stop robot immediately
+                                raise KeyboardInterrupt
+                            
                             print(f"    Collecting data at {target_force:.1f}N for {data_collection_duration:.1f}s...")
-                            time.sleep(data_collection_duration)
+                            # Break wait into smaller chunks to check shutdown more frequently
+                            wait_chunks = max(1, int(data_collection_duration / 0.1))  # Check every 0.1s
+                            chunk_duration = data_collection_duration / wait_chunks
+                            for _ in range(wait_chunks):
+                                if shutdown_requested:
+                                    print("\n⚠️  Shutdown requested - stopping data collection")
+                                    r.stop()  # Stop robot immediately
+                                    raise KeyboardInterrupt
+                                time.sleep(chunk_duration)
                             
                             # CRITICAL: Mark sequence_end IMMEDIATELY after the wait at the LAST target force
                             # This ensures the sequence ends exactly when data collection is complete, before any return movement
@@ -970,63 +1238,100 @@ def main():
                                 time.sleep(0.01)  # 10ms to ensure one sample is logged with sequence_end
                                 # Then immediately change label to prevent logging more samples with sequence_end
                                 logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_return")
-                        
-                        print(f"  Force-controlled press complete - reached {target_forces[-1]:.1f}N")
-                        
-                        # For force-controlled pressing: return to REFERENCE initial Z position
-                        # This ensures the next press starts from the same reference position
-                        if reference_initial_z is not None:
-                            current_state = r.getState()
-                            current_z = current_state.T[2, 3]
-                            z_diff = current_z - reference_initial_z  # How much we need to move to return to reference
-                            if abs(z_diff) > 0.0001:  # More than 0.1mm difference
-                                logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_lift")
-                                print(f"Press {press_id} complete - Returning to reference position (moving {z_diff*1000:.2f}mm)")
-                                move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)  # Move back to reference_initial_z
-                                time.sleep(LIFT_DELAY)
+                                
+                                print(f"  Force-controlled press complete - reached {target_forces[-1]:.1f}N")
+                                
+                                # For force-controlled pressing: return to REFERENCE initial Z position
+                                # This ensures the next press starts from the same reference position
+                                if reference_initial_z is not None:
+                                    current_state = r.getState()
+                                    current_z = current_state.T[2, 3]
+                                    z_diff = current_z - reference_initial_z  # How much we need to move to return to reference
+                                    if abs(z_diff) > 0.0001:  # More than 0.1mm difference
+                                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_lift")
+                                        print(f"Press {press_id} complete - Returning to reference position (moving {z_diff*1000:.2f}mm)")
+                                        move_relative(r, 0, 0, -z_diff, MOVEMENT_DURATION)  # Move back to reference_initial_z
+                                        time.sleep(LIFT_DELAY)
+                                    else:
+                                        print(f"Press {press_id} complete - Already at reference position")
+                                        time.sleep(0.2)
                             else:
-                                print(f"Press {press_id} complete - Already at reference position")
-                                time.sleep(0.2)
-                    else:
-                        # Original position-controlled pressing
-                        for step_num in range(STEPS_PER_PRESS):
-                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
-                            move_relative(r, 0, 0, DZ_PRESS)
-                            print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
-                            time.sleep(PRESS_DELAY)
+                                # Original position-controlled pressing
+                                for step_num in range(STEPS_PER_PRESS):
+                                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
+                                    move_relative(r, 0, 0, DZ_PRESS)
+                                    print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
+                                    time.sleep(PRESS_DELAY)
 
-                    # Capture press snapshot before lifting
-                    with stretchmagtec_data_lock:
-                        sensor_snapshot = stretchmagtec_data.copy()
-                    ft_snapshot = ft_thread.get_ft()
-                    summary_meta = {
-                        "position_id": int(position_id),
-                        "offset_key": offset_key,
-                        "press_id": press_id,
-                        "press_index": press_num,
-                        "timestamp": datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3],
-                        "stretch_level": float(getattr(config_module, "CURRENT_STRETCH_VALUE", 0.0)),
-                        "stretch_label": str(getattr(config_module, "CURRENT_STRETCH_LABEL", "")),
-                        "press_profile": str(getattr(config_module, "CURRENT_PRESS_PROFILE", "")),
-                        "press_depth_m": float(abs(DZ_PRESS) * STEPS_PER_PRESS),
-                        "steps_per_press": int(STEPS_PER_PRESS),
-                    }
-                    press_summary_sensors.append(sensor_snapshot)
-                    press_summary_forces.append(np.array(ft_snapshot, dtype=float))
-                    press_summary_metadata.append(summary_meta)
+                            # Capture press snapshot before lifting
+                            with stretchmagtec_data_lock:
+                                sensor_snapshot = stretchmagtec_data.copy()
+                            ft_snapshot = ft_thread.get_ft()
+                            summary_meta = {
+                                "position_id": int(position_id),
+                                "offset_key": offset_key,
+                                "press_id": press_id,
+                                "press_index": press_num,
+                                "timestamp": datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3],
+                                "stretch_level": float(getattr(config_module, "CURRENT_STRETCH_VALUE", 0.0)),
+                                "stretch_label": str(getattr(config_module, "CURRENT_STRETCH_LABEL", "")),
+                                "press_profile": str(getattr(config_module, "CURRENT_PRESS_PROFILE", "")),
+                                "press_depth_m": float(abs(DZ_PRESS) * STEPS_PER_PRESS),
+                                "steps_per_press": int(STEPS_PER_PRESS),
+                            }
+                            press_summary_sensors.append(sensor_snapshot)
+                            press_summary_forces.append(np.array(ft_snapshot, dtype=float))
+                            press_summary_metadata.append(summary_meta)
+                            
+                            # Lift back up
+                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_lift")
+                            lift_distance = DZ_LIFT * STEPS_PER_PRESS
+                            move_relative(r, 0, 0, lift_distance, MOVEMENT_DURATION * STEPS_PER_PRESS)
+                            print(f"Press {press_id} complete - Lifting up by {lift_distance}m")
+                            time.sleep(LIFT_DELAY)
+                            
+                            # Calibrate after press (optional, per-position calibration)
+                            if FT_PER_POSITION_CALIBRATION_ENABLED:
+                                ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
+                            if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
+                                stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
+                            
+                            # Press completed successfully
+                            press_success = True
+                            break  # Exit retry loop
+                            
+                        except Exception as e:
+                            error_str = str(e)
+                            print(f"   ❌ Press {press_id} attempt {press_retry + 1}/{max_press_retries} failed: {error_str}")
+                            
+                            # Check if it's a reflex mode error
+                            if "Reflex" in error_str or "reflex" in error_str.lower():
+                                print("   🛑 Robot in reflex mode (safety stop) during press.")
+                                print("   📊 Data collection is paused but data already collected is safe.")
+                                if press_retry < max_press_retries - 1:
+                                    print("   🔓 Please unlock the safety button on the robot and reset it, then press Enter to retry this press...")
+                                    try:
+                                        input()
+                                        print("   ✅ Robot reset acknowledged, retrying press...")
+                                        time.sleep(3)  # Give robot time to fully reset
+                                        # Continue to retry
+                                    except KeyboardInterrupt:
+                                        print("   ⚠️  User interrupted during reflex recovery.")
+                                        raise  # Re-raise to stop collection
+                                else:
+                                    print(f"   ❌ Failed to complete press {press_id} after {max_press_retries} attempts")
+                                    raise  # Re-raise to stop collection
+                            elif press_retry < max_press_retries - 1:
+                                # Non-reflex error - retry with delay
+                                print(f"   🔄 Retrying press in 2 seconds...")
+                                time.sleep(2)
+                            else:
+                                # Final attempt failed
+                                print(f"   ❌ Failed to complete press {press_id} after {max_press_retries} attempts")
+                                raise  # Re-raise the exception
                     
-                    # Lift back up
-                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_lift")
-                    lift_distance = DZ_LIFT * STEPS_PER_PRESS
-                    move_relative(r, 0, 0, lift_distance, MOVEMENT_DURATION * STEPS_PER_PRESS)
-                    print(f"Press {press_id} complete - Lifting up by {lift_distance}m")
-                    time.sleep(LIFT_DELAY)
-                    
-                    # Calibrate after press (optional, per-position calibration)
-                    if FT_PER_POSITION_CALIBRATION_ENABLED:
-                        ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
-                    if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
-                        stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
+                    if not press_success:
+                        raise RuntimeError(f"Press {press_id} failed after {max_press_retries} attempts")
                 
                 print(f"Completed position {position_id} ({row},{col}) - {offset_key}")
                 time.sleep(1)
@@ -1052,7 +1357,7 @@ def main():
             center_pose[:3, :3] = rotation_matrix
             center_pose[:3, 3] = center_position
             print("\nReturning robot to central position before completing the stretch run...")
-            r.move("absolute", center_pose, ABSOLUTE_MOVEMENT_DURATION)
+            safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
             time.sleep(1)
 
     finally:
@@ -1323,13 +1628,14 @@ if __name__ == '__main__':
             if logger.is_alive():
                 logger.join(timeout=2.0)
         
-        # Stop robot if it exists
+        # Stop robot IMMEDIATELY (most important - must be first)
         if 'r' in globals() and r is not None:
-            print("  Stopping robot...")
+            print("  Stopping robot immediately...")
             try:
                 r.stop()
-            except:
-                pass
+                print("  ✅ Robot stopped")
+            except Exception as e:
+                print(f"  ⚠️  Error stopping robot: {e}")
         
         print("  Shutdown complete.")
         sys.exit(0)

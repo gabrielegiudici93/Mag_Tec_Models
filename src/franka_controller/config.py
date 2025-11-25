@@ -112,7 +112,7 @@ FORCE_CONTROLLED_PRESS = True  # If True, use force-controlled pressing (0.1N st
 FORCE_STEP_SIZE = 0.1  # Force step size in Newtons (0.1N steps)
 FORCE_MAX = 3.0  # Maximum target force in Newtons (3N)
 FORCE_STEP_DELAY = 1.0  # Wait time at each force step (seconds)
-FORCE_TOLERANCE = 0.01  # Tolerance for force control (N) - must be smaller than step size
+FORCE_TOLERANCE = 0.05 # Tolerance for force control (N) - must be smaller than step size
 
 # Press ID system - alphabetical identifiers for each press cycle
 # Generate: A, B, ..., Z, AA, AB, ..., AZ, BA, BB, ... (supports up to 100+ press cycles)
@@ -159,13 +159,13 @@ FT_CALIBRATION_ENABLED = FT_PER_POSITION_CALIBRATION_ENABLED
 # =============================================================================
 # STRETCHMAGTEC 3x5 SENSOR CONFIGURATION
 # =============================================================================
-STRETCHMAGTEC_PORT = '/dev/ttyACM2'  # Updated after USB hub reconnection
-STRETCHMAGTEC_BAUD = 2000000  # High-speed mode required for StretchMagTec streaming
+STRETCHMAGTEC_PORT = '/dev/ttyACM0'  # Updated - device is on ttyACM0
+STRETCHMAGTEC_BAUD = 1000000  # High-speed mode required for StretchMagTec streaming
 STRETCHMAGTEC_ROWS = 3
 STRETCHMAGTEC_COLS = 5
 STRETCHMAGTEC_SENSORS = 15  # 3x5 grid
 STRETCHMAGTEC_CHANNELS = 3  # X, Y, Z magnetic field
-STRETCHMAGTEC_THRESHOLD = 50.0  # Threshold for magnetic field values
+STRETCHMAGTEC_THRESHOLD = 0.0  # Threshold for magnetic field values
 
 # Calibration settings
 STRETCHMAGTEC_INITIAL_CALIBRATION_ENABLED = True  # Initial calibration at start (ALWAYS recommended)

@@ -122,7 +122,7 @@ def identify_outliers(sequences: List[Dict], z_threshold: float = 3.0) -> List[i
     """Identify outlier sequences using statistical methods.
     
     Uses Median Absolute Deviation (MAD) to identify outliers in:
-    - Duration
+    - Duration (with special attention to very long sequences > 20s)
     - Max Fz
     - Number of samples
     
@@ -138,7 +138,7 @@ def identify_outliers(sequences: List[Dict], z_threshold: float = 3.0) -> List[i
     
     outlier_indices = set()
     
-    # Check each feature
+    # Check each feature with MAD
     for feature_name, feature_values in [
         ('duration', durations),
         ('fz_max', fz_maxes),
@@ -149,25 +149,112 @@ def identify_outliers(sequences: List[Dict], z_threshold: float = 3.0) -> List[i
         
         if mad > 0:
             # Use modified Z-score with MAD
+            # For duration, use a more sensitive threshold (2.0) to catch sequences
+            # that are significantly longer/shorter than the median, even if not > 20s
+            threshold = z_threshold if feature_name != 'duration' else 2.0
             modified_z_scores = 0.6745 * (feature_values - median) / mad
-            outliers = np.where(np.abs(modified_z_scores) > z_threshold)[0]
+            outliers = np.where(np.abs(modified_z_scores) > threshold)[0]
+            if len(outliers) > 0 and feature_name == 'duration':
+                # Print info about duration outliers
+                outlier_durations = feature_values[outliers]
+                print(f"    Found {len(outliers)} duration outliers: median={median:.2f}s, outliers={outlier_durations}")
             outlier_indices.update(outliers)
     
     return sorted(list(outlier_indices))
 
 
-def remove_outliers(sequences: List[Dict], z_threshold: float = 3.0) -> Tuple[List[Dict], List[int]]:
-    """Remove outlier sequences and return cleaned list."""
-    outlier_indices = identify_outliers(sequences, z_threshold)
+def remove_outliers(sequences: List[Dict], z_threshold: float = 3.0, remove_per_offset: int = 2) -> Tuple[List[Dict], List[int]]:
+    """Remove outlier sequences and return cleaned list.
     
-    if outlier_indices:
-        print(f"  Identified {len(outlier_indices)} outlier sequences: {outlier_indices}")
+    Args:
+        sequences: List of sequence dictionaries
+        z_threshold: Z-score threshold for outlier detection
+        remove_per_offset: Number of outliers to remove per offset (default: 2)
+    
+    Returns:
+        Tuple of (cleaned_sequences, outlier_indices)
+    """
+    if remove_per_offset <= 0:
+        return sequences, []
+    
+    # Group sequences by offset
+    sequences_by_offset = {}
+    for idx, seq in enumerate(sequences):
+        offset = seq.get('offset', 'unknown')
+        if offset not in sequences_by_offset:
+            sequences_by_offset[offset] = []
+        sequences_by_offset[offset].append((idx, seq))
+    
+    all_outlier_indices = set()
+    
+    # Remove outliers independently for each offset
+    for offset, offset_sequences in sequences_by_offset.items():
+        if len(offset_sequences) <= remove_per_offset:
+            print(f"  Offset {offset}: Only {len(offset_sequences)} sequences, skipping outlier removal")
+            continue
+        
+        # Extract just the sequences (without indices) for outlier detection
+        offset_seq_list = [seq for _, seq in offset_sequences]
+        
+        # Identify outliers for this offset
+        outlier_indices_local = identify_outliers(offset_seq_list, z_threshold)
+        
+        # Convert local indices to global indices
+        global_indices = [offset_sequences[i][0] for i in outlier_indices_local]
+        
+        # Remove up to remove_per_offset outliers (take the most extreme ones)
+        if len(global_indices) > 0:
+            # Calculate outlier scores to find the most extreme ones
+            offset_seq_list_with_scores = []
+            for local_idx, (global_idx, seq) in enumerate(offset_sequences):
+                if local_idx in outlier_indices_local:
+                    # Calculate a combined outlier score
+                    fz = seq.get('max_fz', 0)
+                    duration = seq.get('duration', 0)
+                    num_samples = seq.get('num_samples', 0)
+                    
+                    # Use MAD-based scores
+                    fz_values = [s.get('max_fz', 0) for s in offset_seq_list]
+                    duration_values = [s.get('duration', 0) for s in offset_seq_list]
+                    num_samples_values = [s.get('num_samples', 0) for s in offset_seq_list]
+                    
+                    fz_median = np.median(fz_values)
+                    fz_mad = np.median(np.abs(np.array(fz_values) - fz_median))
+                    duration_median = np.median(duration_values)
+                    duration_mad = np.median(np.abs(np.array(duration_values) - duration_median))
+                    num_samples_median = np.median(num_samples_values)
+                    num_samples_mad = np.median(np.abs(np.array(num_samples_values) - num_samples_median))
+                    
+                    score = 0
+                    if fz_mad > 0:
+                        score += abs((fz - fz_median) / fz_mad)
+                    if duration_mad > 0:
+                        # Give duration higher weight to catch sequences significantly longer/shorter than median
+                        duration_score = abs((duration - duration_median) / duration_mad)
+                        # Extra penalty for sequences much longer than median (e.g., 2x median or more)
+                        if duration > duration_median * 2.0:
+                            duration_score *= 2.0
+                        score += duration_score * 1.5  # 1.5x weight for duration
+                    if num_samples_mad > 0:
+                        score += abs((num_samples - num_samples_median) / num_samples_mad)
+                    
+                    offset_seq_list_with_scores.append((global_idx, score))
+            
+            # Sort by score (highest = most extreme) and take top remove_per_offset
+            offset_seq_list_with_scores.sort(key=lambda x: x[1], reverse=True)
+            outliers_to_remove = [idx for idx, _ in offset_seq_list_with_scores[:remove_per_offset]]
+            
+            all_outlier_indices.update(outliers_to_remove)
+            print(f"  Offset {offset}: Removing {len(outliers_to_remove)} outliers (indices: {sorted(outliers_to_remove)})")
+    
+    if all_outlier_indices:
+        print(f"  Total outliers removed: {len(all_outlier_indices)} (indices: {sorted(all_outlier_indices)})")
         # Remove outliers (in reverse order to maintain indices)
-        cleaned_sequences = [s for i, s in enumerate(sequences) if i not in outlier_indices]
+        cleaned_sequences = [s for i, s in enumerate(sequences) if i not in all_outlier_indices]
     else:
         cleaned_sequences = sequences
     
-    return cleaned_sequences, outlier_indices
+    return cleaned_sequences, sorted(list(all_outlier_indices))
 
 
 def balance_sequences(sequences_by_stretch: Dict[str, List[Dict]]) -> Dict[str, List[Dict]]:
@@ -269,7 +356,7 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
         fz_target_max: Target maximum for Fz normalization (default 3.0)
     
     Returns:
-        X: Features [samples, N] where N=45 (raw) if use_feature_engineering=False, or N=125 (with engineering) if True
+        X: Features [samples, N] where N=45 (raw) if use_feature_engineering=False, or N=15 (normalized per sensor) if True
         y_fz: Fz values (normalized to [fz_target_min, fz_target_max] if normalize_fz=True)
         y_offset: Offset labels (integers: 0=center, 1=ne, 2=nw, 3=se, 4=sw, -1=unknown)
         scaler: Fitted StandardScaler (if normalize=True) or None
@@ -311,45 +398,71 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
         fz_raw = fz_raw[combined_mask]
         
         if len(magnetic) == 0:
+            print(f"    Warning: Sequence {seq.get('press_key', 'unknown')} (offset: {seq.get('offset', 'unknown')}) is empty after filtering, skipping")
             continue  # Skip empty sequences
         
+        # Cut sequence at 3N: keep only samples where Fz <= 3.0N
+        # Find first index where Fz exceeds 3N, then cut everything after
+        fz_cut_mask = fz_raw <= 3.0
+        if np.any(~fz_cut_mask):
+            # Find first index where Fz exceeds 3N
+            first_exceed_idx = np.where(~fz_cut_mask)[0]
+            if len(first_exceed_idx) > 0:
+                cut_idx = first_exceed_idx[0]
+                # Cut magnetic, fz, and also timestamps if available
+                magnetic = magnetic[:cut_idx]
+                fz_raw = fz_raw[:cut_idx]
+                # Also cut timestamps if they exist in the sequence
+                if 'timestamps' in seq and len(seq['timestamps']) > cut_idx:
+                    seq['timestamps'] = seq['timestamps'][:cut_idx]
+        
+        if len(magnetic) == 0:
+            print(f"    Warning: Sequence {seq.get('press_key', 'unknown')} (offset: {seq.get('offset', 'unknown')}) is empty after filtering/cutting, skipping")
+            continue  # Skip empty sequences after cutting
+        
         if use_feature_engineering:
-            # Start with raw features: [samples, 45]
-            features = magnetic.reshape(magnetic.shape[0], -1)
+            # METHOD 1: 15 features (one per sensor), each normalized independently
+            # For each sensor, normalize the [x,y,z] triple using the sensor's global max/min
+            # Then use the normalized magnitude as the feature
             
-            # 1. Add magnitude for each sensor: sqrt(Bx² + By² + Bz²) [samples, 15]
+            # Compute magnitude for each sensor: [samples, 15]
             magnitudes = np.sqrt(np.sum(magnetic**2, axis=2))  # [samples, 15]
-            features = np.hstack([features, magnitudes])
             
-            # 2. Add statistics per sensor: mean, std, max, min [samples, 15*4 = 60]
-            # Mean per sensor
-            sensor_means = np.mean(magnetic, axis=2)  # [samples, 15]
-            # Std per sensor
-            sensor_stds = np.std(magnetic, axis=2)  # [samples, 15]
-            # Max per sensor
-            sensor_maxs = np.max(magnetic, axis=2)  # [samples, 15]
-            # Min per sensor
-            sensor_mins = np.min(magnetic, axis=2)  # [samples, 15]
-            features = np.hstack([features, sensor_means, sensor_stds, sensor_maxs, sensor_mins])
+            # For each sensor, find global min/max across all samples for normalization
+            # We need to normalize each sensor's [x,y,z] values independently
+            # Then compute magnitude from normalized values
+            normalized_magnitudes = np.zeros_like(magnitudes)  # [samples, 15]
             
-            # 3. Add central sensor features (indices 6, 7, 8 - the 3x3 center)
-            central_sensors = magnetic[:, [6, 7, 8], :]  # [samples, 3, 3]
-            central_mean = np.mean(central_sensors, axis=(1, 2))  # [samples]
-            central_std = np.std(central_sensors, axis=(1, 2))  # [samples]
-            central_max = np.max(central_sensors, axis=(1, 2))  # [samples]
-            central_min = np.min(central_sensors, axis=(1, 2))  # [samples]
-            features = np.hstack([features, central_mean.reshape(-1, 1), central_std.reshape(-1, 1), 
-                                 central_max.reshape(-1, 1), central_min.reshape(-1, 1)])
+            for sensor_idx in range(15):
+                # Get all [x,y,z] values for this sensor across all samples
+                sensor_xyz = magnetic[:, sensor_idx, :]  # [samples, 3]
+                
+                # Find global min and max across all [x,y,z] values for this sensor
+                sensor_min = np.min(sensor_xyz)
+                sensor_max = np.max(sensor_xyz)
+                
+                # Normalize [x,y,z] values: (val - min) / (max - min)
+                if sensor_max > sensor_min:
+                    sensor_xyz_norm = (sensor_xyz - sensor_min) / (sensor_max - sensor_min)
+                else:
+                    # Avoid division by zero
+                    sensor_xyz_norm = sensor_xyz - sensor_min
+                
+                # Compute magnitude from normalized [x,y,z]
+                normalized_magnitudes[:, sensor_idx] = np.sqrt(np.sum(sensor_xyz_norm**2, axis=1))
             
-            # 4. Add differences between central and peripheral sensors
-            peripheral_sensors = np.concatenate([magnetic[:, :6, :], magnetic[:, 9:, :]], axis=1)  # [samples, 12, 3]
-            peripheral_mean = np.mean(peripheral_sensors, axis=(1, 2))  # [samples]
-            center_periphery_diff = central_mean - peripheral_mean  # [samples]
-            features = np.hstack([features, center_periphery_diff.reshape(-1, 1)])
+            # Use normalized magnitudes as features: [samples, 15]
+            features = normalized_magnitudes
             
-            # Total: 45 (raw) + 15 (magnitudes) + 60 (stats) + 4 (central) + 1 (diff) = 125 features
+            # Total: 15 features (one per sensor, normalized independently)
+            # Normalization: Each sensor's [x,y,z] is normalized using min-max normalization
+            #               independently (sensor 0 uses its own min/max, sensor 1 uses its own, etc.)
+            #               Then magnitude is computed from normalized [x,y,z]
         else:
-            # Original: just flatten [samples, 15, 3] -> [samples, 45]
+            # METHOD 2: 45 raw features (original approach)
+            # Just flatten [samples, 15, 3] -> [samples, 45]
+            # Each feature is a raw magnetic field component (Bx, By, Bz for each of 15 sensors)
+            # Normalization: Applied later via StandardScaler (zero mean, unit variance)
             features = magnetic.reshape(magnetic.shape[0], -1)
         
         # Store raw Fz values (will normalize after concatenation)
@@ -366,16 +479,12 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
     y_fz_raw = np.concatenate(all_fz)
     y_offset = np.concatenate(all_offsets)
     
-    # Normalize Fz to target range [0, 3.0] if requested (on ALL data together)
+    # Don't normalize Fz - keep original values (but sequences are cut at 3N)
     fz_scaler = None
-    if normalize_fz:
-        fz_min = np.min(y_fz_raw)
-        fz_max = np.max(y_fz_raw)
-        y_fz = normalize_fz_to_range(y_fz_raw, fz_target_min, fz_target_max)
-        fz_scaler = (fz_min, fz_max)  # Store original range for inverse transform if needed
-        print(f"  Fz normalized from [{fz_min:.3f}, {fz_max:.3f}] N to [{fz_target_min:.3f}, {fz_target_max:.3f}] N")
-    else:
-        y_fz = y_fz_raw
+    y_fz = y_fz_raw
+    fz_min = np.min(y_fz_raw)
+    fz_max = np.max(y_fz_raw)
+    print(f"  Fz range: [{fz_min:.3f}, {fz_max:.3f}] N (not normalized, sequences cut at 3N)")
     
     # Normalize features
     scaler = None
@@ -383,7 +492,10 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
         scaler = StandardScaler()
         X = scaler.fit_transform(X)
     
-    return X, y_fz, y_offset, scaler, fz_scaler
+    # Also return actual sequence lengths after filtering
+    actual_sequence_lengths = [len(f) for f in all_features]
+    
+    return X, y_fz, y_offset, scaler, fz_scaler, actual_sequence_lengths
 
 
 def create_model(regressor: bool = True, use_gpu: bool = True, n_estimators: int = 200, gpu_id: int = 0):
@@ -462,6 +574,7 @@ def train_models_for_stretch(
     gpu_id: int = 0,
     fz_target_min: float = 0.0,
     fz_target_max: float = 3.0,
+    feature_method: str = 'raw',
 ) -> Dict:
     """Train force regressor and offset classifier for a specific stretch level."""
     print(f"\n{'='*80}")
@@ -469,45 +582,79 @@ def train_models_for_stretch(
     print(f"{'='*80}")
     print(f"Total sequences: {len(sequences)}")
     
-    # Prepare data (with normalization, NO feature engineering, displacement filtering, and Fz normalization)
-    X, y_fz, y_offset, scaler, fz_scaler = prepare_training_data(
+    # Prepare data (with normalization, feature method from parameter, displacement filtering, NO Fz normalization - cut at 3N)
+    X, y_fz, y_offset, scaler, fz_scaler, actual_sequence_lengths = prepare_training_data(
         sequences, 
         normalize=True, 
-        use_feature_engineering=False,  # Use raw features only (45 features)
+        use_feature_engineering=(feature_method == 'normalized'),  # True = 15 normalized, False = 45 raw
         filter_displacement=True,
         displacement_threshold=95.0,
-        normalize_fz=True,
+        normalize_fz=False,  # Don't normalize, just cut at 3N
         fz_target_min=fz_target_min,
         fz_target_max=fz_target_max
     )
     print(f"Total samples: {len(X)}")
-    print(f"Features: {X.shape[1]} (raw features only)")
+    print(f"Features: {X.shape[1]} ({'15 normalized per sensor' if X.shape[1] == 15 else 'raw features' if X.shape[1] == 45 else str(X.shape[1]) + ' features'})")
     print(f"Fz range: [{np.min(y_fz):.3f}, {np.max(y_fz):.3f}] N (normalized to [{fz_target_min:.1f}, {fz_target_max:.1f}])")
     print(f"Offsets: {np.unique(y_offset)}")
     print(f"Features normalized: mean={np.mean(X):.2f}, std={np.std(X):.2f}")
     
-    # Split by sequence (70% of sequences, not samples)
-    # Group samples by sequence
-    sequence_lengths = [len(seq['fz']) for seq in sequences]
-    sequence_boundaries = np.cumsum([0] + sequence_lengths)
+    # Split by sequence (70% of sequences, not samples) - RANDOM SPLIT
+    # Use actual sequence lengths after filtering
+    sequence_lengths = actual_sequence_lengths
     
-    # Split sequences
+    # Random split of sequences (not sequential)
+    np.random.seed(42)  # For reproducibility
     n_train_seqs = int(len(sequences) * train_ratio)
-    train_seq_indices = list(range(n_train_seqs))
-    test_seq_indices = list(range(n_train_seqs, len(sequences)))
+    all_indices = np.arange(len(sequences))
+    np.random.shuffle(all_indices)
+    train_seq_indices = sorted(all_indices[:n_train_seqs])  # Keep sorted for easier indexing
+    test_seq_indices = sorted(all_indices[n_train_seqs:])
     
-    # Get sample indices for train/test
-    train_start = sequence_boundaries[0]
-    train_end = sequence_boundaries[n_train_seqs]
-    test_start = sequence_boundaries[n_train_seqs]
-    test_end = sequence_boundaries[-1]
+    # Get sample indices for train/test (reorder to match shuffled sequences)
+    # First, we need to map sequence indices to sample indices
+    # Build a mapping: sequence_index -> (start_sample_idx, end_sample_idx)
+    sequence_to_samples = {}
+    current_idx = 0
+    for i, seq_len in enumerate(sequence_lengths):
+        sequence_to_samples[i] = (current_idx, current_idx + seq_len)
+        current_idx += seq_len
     
-    X_train = X[train_start:train_end]
-    X_test = X[test_start:test_end]
-    y_fz_train = y_fz[train_start:train_end]
-    y_fz_test = y_fz[test_start:test_end]
-    y_offset_train = y_offset[train_start:train_end]
-    y_offset_test = y_offset[test_start:test_end]
+    # Verify that current_idx matches len(X)
+    if current_idx != len(X):
+        print(f"  Warning: Total samples mismatch! Expected {len(X)}, calculated {current_idx}")
+        # Adjust to match actual X length
+        if current_idx > len(X):
+            # Truncate the last sequence if needed
+            last_seq_idx = len(sequence_lengths) - 1
+            if last_seq_idx in sequence_to_samples:
+                start, end = sequence_to_samples[last_seq_idx]
+                sequence_to_samples[last_seq_idx] = (start, len(X))
+    
+    # Now collect sample indices for train and test sequences
+    train_samples = []
+    test_samples = []
+    for i in train_seq_indices:
+        start, end = sequence_to_samples[i]
+        # Ensure end doesn't exceed X length
+        end = min(end, len(X))
+        train_samples.extend(range(start, end))
+    for i in test_seq_indices:
+        start, end = sequence_to_samples[i]
+        # Ensure end doesn't exceed X length
+        end = min(end, len(X))
+        test_samples.extend(range(start, end))
+    
+    # Convert to numpy arrays for indexing
+    train_samples = np.array(train_samples)
+    test_samples = np.array(test_samples)
+    
+    X_train = X[train_samples]
+    X_test = X[test_samples]
+    y_fz_train = y_fz[train_samples]
+    y_fz_test = y_fz[test_samples]
+    y_offset_train = y_offset[train_samples]
+    y_offset_test = y_offset[test_samples]
     
     print(f"\nTrain: {len(train_seq_indices)} sequences, {len(X_train)} samples")
     print(f"Test: {len(test_seq_indices)} sequences, {len(X_test)} samples")
@@ -537,6 +684,11 @@ def train_models_for_stretch(
         force_model.fit(X_train, y_fz_train)
         print("  Sample weighting not supported, using regular fit")
     y_fz_pred = force_model.predict(X_test)
+    
+    # Store predictions for plotting (before denormalization)
+    y_fz_test_actual = y_fz_test.copy()
+    y_fz_pred_actual = y_fz_pred.copy()
+    
     rmse = float(np.sqrt(mean_squared_error(y_fz_test, y_fz_pred)))
     residuals = y_fz_test - y_fz_pred
     std_dev = float(np.std(residuals))
@@ -592,12 +744,23 @@ def train_models_for_stretch(
             from sklearn.metrics import confusion_matrix
             cm = confusion_matrix(y_offset_test_valid, y_offset_pred)
             print(f"  Confusion matrix shape: {cm.shape}")
+            
+            # Store confusion matrix for plotting
+            offset_cm = cm
+            offset_test_labels = y_offset_test_valid
+            offset_pred_labels = y_offset_pred
         else:
             offset_accuracy = 0.0
+            offset_cm = None
+            offset_test_labels = None
+            offset_pred_labels = None
             print("  No valid test samples for offset classification")
     else:
         offset_model = None
         offset_accuracy = 0.0
+        offset_cm = None
+        offset_test_labels = None
+        offset_pred_labels = None
         print(f"  Skipped (insufficient offset diversity: train classes={np.unique(y_offset_train[valid_mask]) if np.sum(valid_mask) > 0 else 'none'})")
     
     return {
@@ -624,6 +787,11 @@ def train_models_for_stretch(
         'fz_train_max': fz_train_max,
         'fz_test_min': fz_test_min,
         'fz_test_max': fz_test_max,
+        'y_fz_test': y_fz_test_actual,  # Store for prediction plots
+        'y_fz_pred': y_fz_pred_actual,  # Store for prediction plots
+        'offset_confusion_matrix': offset_cm,
+        'offset_test_labels': offset_test_labels,
+        'offset_pred_labels': offset_pred_labels,
     }
 
 
@@ -633,6 +801,7 @@ def train_combined_model(
     use_gpu: bool = True,
     fz_target_min: float = 0.0,
     fz_target_max: float = 3.0,
+    feature_method: str = 'raw',
 ) -> Dict:
     """Train a combined model using all stretch levels."""
     print(f"\n{'='*80}")
@@ -649,14 +818,14 @@ def train_combined_model(
     print(f"Total sequences: {len(all_sequences)}")
     print(f"  Per stretch: {[(k, len(v)) for k, v in sequences_by_stretch.items()]}")
     
-    # Prepare data (with normalization, NO feature engineering, displacement filtering, and Fz normalization)
-    X, y_fz, y_offset, scaler, fz_scaler = prepare_training_data(
+    # Prepare data (with normalization, feature method from args, displacement filtering, NO Fz normalization - cut at 3N)
+    X, y_fz, y_offset, scaler, fz_scaler, actual_sequence_lengths = prepare_training_data(
         all_sequences,
         normalize=True,
-        use_feature_engineering=False,  # Use raw features only (45 features)
+        use_feature_engineering=(feature_method == 'normalized'),  # True = 15 normalized, False = 45 raw
         filter_displacement=True,
         displacement_threshold=95.0,
-        normalize_fz=True,
+        normalize_fz=False,  # Don't normalize, just cut at 3N
         fz_target_min=fz_target_min,
         fz_target_max=fz_target_max
     )
@@ -665,31 +834,9 @@ def train_combined_model(
     stretch_map = {label: i for i, label in enumerate(sorted(set(all_stretches)))}
     y_stretch = np.array([stretch_map[label] for label in all_stretches])
     
-    # Recalculate stretch labels after filtering
-    # We need to track which samples belong to which stretch after filtering
-    # Since filtering happens inside prepare_training_data, we need to recalculate
-    # by going through sequences again and tracking filtered lengths
-    stretch_labels_per_seq = []
-    for stretch_label, sequences in sequences_by_stretch.items():
-        for seq in sequences:
-            # Apply same filtering logic to get actual filtered length
-            magnetic = seq['stretchmagtec']
-            forces = seq.get('forces', None)
-            if forces is not None:
-                fz_raw = np.abs(forces[:, 2]) if forces.shape[1] >= 3 else np.abs(seq['fz'])
-            else:
-                fz_raw = np.abs(seq['fz'])
-            
-            # Apply displacement filter
-            mag_mask = filter_high_displacement(magnetic, 95.0)
-            fz_mask = filter_high_displacement(fz_raw, 95.0)
-            combined_mask = mag_mask & fz_mask
-            
-            filtered_length = np.sum(combined_mask)
-            stretch_labels_per_seq.append((stretch_map[stretch_label], filtered_length))
-    
-    # Expand stretch labels based on filtered lengths
-    y_stretch_expanded = np.concatenate([np.full(length, stretch_label) for stretch_label, length in stretch_labels_per_seq])
+    # Expand stretch labels based on actual filtered lengths
+    y_stretch_expanded = np.concatenate([np.full(length, stretch_map[all_stretches[i]]) 
+                                         for i, length in enumerate(actual_sequence_lengths)])
     
     # Ensure lengths match (should be equal to len(y_fz))
     if len(y_stretch_expanded) != len(y_fz):
@@ -701,30 +848,70 @@ def train_combined_model(
             y_stretch_expanded = np.concatenate([y_stretch_expanded, np.full(len(y_fz) - len(y_stretch_expanded), y_stretch_expanded[-1] if len(y_stretch_expanded) > 0 else 0)])
     
     print(f"Total samples: {len(X)}")
-    print(f"Features: {X.shape[1]} (raw features only)")
+    print(f"Features: {X.shape[1]} ({'15 normalized per sensor' if X.shape[1] == 15 else 'raw features' if X.shape[1] == 45 else str(X.shape[1]) + ' features'})")
     print(f"Fz range: [{np.min(y_fz):.3f}, {np.max(y_fz):.3f}] N (normalized to [0, 3])")
     print(f"Stretch levels: {list(stretch_map.keys())}")
     print(f"Features normalized: mean={np.mean(X):.2f}, std={np.std(X):.2f}")
     print(f"Offset distribution: {dict(zip(*np.unique(y_offset, return_counts=True)))}")
     
-    # Split by sequence (70% of sequences)
-    sequence_lengths = [len(seq['fz']) for seq in all_sequences]
-    sequence_boundaries = np.cumsum([0] + sequence_lengths)
+    # Split by sequence (70% of sequences) - RANDOM SPLIT
+    # Use actual sequence lengths after filtering
+    sequence_lengths = actual_sequence_lengths
     
+    # Random split of sequences (not sequential)
+    np.random.seed(42)  # For reproducibility
     n_train_seqs = int(len(all_sequences) * train_ratio)
-    train_start = sequence_boundaries[0]
-    train_end = sequence_boundaries[n_train_seqs]
-    test_start = sequence_boundaries[n_train_seqs]
-    test_end = sequence_boundaries[-1]
+    all_indices = np.arange(len(all_sequences))
+    np.random.shuffle(all_indices)
+    train_seq_indices = sorted(all_indices[:n_train_seqs])  # Keep sorted for easier indexing
+    test_seq_indices = sorted(all_indices[n_train_seqs:])
     
-    X_train = X[train_start:train_end]
-    X_test = X[test_start:test_end]
-    y_fz_train = y_fz[train_start:train_end]
-    y_fz_test = y_fz[test_start:test_end]
-    y_offset_train = y_offset[train_start:train_end]
-    y_offset_test = y_offset[test_start:test_end]
-    y_stretch_train = y_stretch_expanded[train_start:train_end]
-    y_stretch_test = y_stretch_expanded[test_start:test_end]
+    # Get sample indices for train/test (reorder to match shuffled sequences)
+    # First, we need to map sequence indices to sample indices
+    # Build a mapping: sequence_index -> (start_sample_idx, end_sample_idx)
+    sequence_to_samples = {}
+    current_idx = 0
+    for i, seq_len in enumerate(sequence_lengths):
+        sequence_to_samples[i] = (current_idx, current_idx + seq_len)
+        current_idx += seq_len
+    
+    # Verify that current_idx matches len(X)
+    if current_idx != len(X):
+        print(f"  Warning: Total samples mismatch! Expected {len(X)}, calculated {current_idx}")
+        # Adjust to match actual X length
+        if current_idx > len(X):
+            # Truncate the last sequence if needed
+            last_seq_idx = len(sequence_lengths) - 1
+            if last_seq_idx in sequence_to_samples:
+                start, end = sequence_to_samples[last_seq_idx]
+                sequence_to_samples[last_seq_idx] = (start, len(X))
+    
+    # Now collect sample indices for train and test sequences
+    train_samples = []
+    test_samples = []
+    for i in train_seq_indices:
+        start, end = sequence_to_samples[i]
+        # Ensure end doesn't exceed X length
+        end = min(end, len(X))
+        train_samples.extend(range(start, end))
+    for i in test_seq_indices:
+        start, end = sequence_to_samples[i]
+        # Ensure end doesn't exceed X length
+        end = min(end, len(X))
+        test_samples.extend(range(start, end))
+    
+    # Convert to numpy arrays for indexing
+    train_samples = np.array(train_samples)
+    test_samples = np.array(test_samples)
+    
+    X_train = X[train_samples]
+    X_test = X[test_samples]
+    y_fz_train = y_fz[train_samples]
+    y_fz_test = y_fz[test_samples]
+    y_offset_train = y_offset[train_samples]
+    y_offset_test = y_offset[test_samples]
+    y_stretch_train = y_stretch_expanded[train_samples]
+    y_stretch_test = y_stretch_expanded[test_samples]
     
     print(f"\nTrain: {n_train_seqs} sequences, {len(X_train)} samples")
     print(f"Test: {len(all_sequences) - n_train_seqs} sequences, {len(X_test)} samples")
@@ -755,6 +942,11 @@ def train_combined_model(
         print("  Sample weighting not supported, using regular fit")
     
     y_fz_pred = force_model.predict(X_test)
+    
+    # Store predictions for plotting (before denormalization)
+    y_fz_test_actual = y_fz_test.copy()
+    y_fz_pred_actual = y_fz_pred.copy()
+    
     rmse = float(np.sqrt(mean_squared_error(y_fz_test, y_fz_pred)))
     residuals = y_fz_test - y_fz_pred
     std_dev = float(np.std(residuals))
@@ -815,12 +1007,23 @@ def train_combined_model(
             cm = confusion_matrix(y_offset_test_valid, y_offset_pred)
             print(f"  Confusion matrix shape: {cm.shape}")
             print(f"  Confusion matrix:\n{cm}")
+            
+            # Store confusion matrix for plotting
+            offset_cm = cm
+            offset_test_labels = y_offset_test_valid
+            offset_pred_labels = y_offset_pred
         else:
             offset_accuracy = 0.0
+            offset_cm = None
+            offset_test_labels = None
+            offset_pred_labels = None
             print("  No valid test samples for offset classification")
     else:
         offset_model = None
         offset_accuracy = 0.0
+        offset_cm = None
+        offset_test_labels = None
+        offset_pred_labels = None
         print(f"  Skipped (insufficient offset diversity: train classes={np.unique(y_offset_train[valid_mask]) if np.sum(valid_mask) > 0 else 'none'})")
     
     # Train stretch classifier
@@ -831,9 +1034,16 @@ def train_combined_model(
         y_stretch_pred = stretch_model.predict(X_test)
         stretch_accuracy = float(accuracy_score(y_stretch_test, y_stretch_pred))
         print(f"  Accuracy: {stretch_accuracy:.4f}")
+        
+        # Store confusion matrix for plotting
+        from sklearn.metrics import confusion_matrix
+        stretch_cm = confusion_matrix(y_stretch_test, y_stretch_pred)
+        print(f"  Confusion matrix shape: {stretch_cm.shape}")
+        print(f"  Confusion matrix:\n{stretch_cm}")
     else:
         stretch_model = None
         stretch_accuracy = 0.0
+        stretch_cm = None
         print("  Skipped (insufficient stretch diversity)")
     
     return {
@@ -841,6 +1051,12 @@ def train_combined_model(
         'force_model': force_model,
         'offset_model': offset_model,
         'stretch_model': stretch_model,
+        'offset_confusion_matrix': offset_cm,
+        'offset_test_labels': offset_test_labels,
+        'offset_pred_labels': offset_pred_labels,
+        'stretch_confusion_matrix': stretch_cm,
+        'stretch_test_labels': y_stretch_test,
+        'stretch_pred_labels': y_stretch_pred,
         'scaler': scaler,  # Save scaler for feature normalization
         'fz_scaler': fz_scaler,  # Save fz_scaler for Fz denormalization
         'n_sequences': len(all_sequences),
@@ -862,6 +1078,8 @@ def train_combined_model(
         'fz_train_max': fz_train_max,
         'fz_test_min': fz_test_min,
         'fz_test_max': fz_test_max,
+        'y_fz_test': y_fz_test_actual,  # Store for prediction plots
+        'y_fz_pred': y_fz_pred_actual,  # Store for prediction plots
     }
 
 
@@ -892,6 +1110,13 @@ def main():
         action='store_true',
         default=True,
         help='Use GPU acceleration if available (default: True)'
+    )
+    parser.add_argument(
+        '--feature-method',
+        type=str,
+        choices=['raw', 'normalized'],
+        default='raw',
+        help='Feature extraction method: "raw" = 45 raw features (flattened), "normalized" = 15 normalized features (one per sensor) (default: raw)'
     )
     parser.add_argument(
         '--no-gpu',
@@ -962,10 +1187,51 @@ def main():
         print(f"  Loaded {len(sequences)} sequences")
         
         if sequences:
-            # Remove outliers
-            print(f"  Removing outliers...")
-            cleaned_sequences, outlier_indices = remove_outliers(sequences, args.z_threshold)
-            print(f"  After outlier removal: {len(cleaned_sequences)} sequences")
+            # Count sequences per offset before any removal
+            initial_offset_counts = {}
+            for seq in sequences:
+                offset = seq.get('offset', 'unknown')
+                initial_offset_counts[offset] = initial_offset_counts.get(offset, 0) + 1
+            print(f"  Initial sequences per offset: {initial_offset_counts}")
+            print(f"  Total initial sequences: {len(sequences)} (expected: 33*5 = 165)")
+            
+            # Remove first sequence per offset (warm-up/calibration sequence) BEFORE outlier removal
+            print(f"  Removing first sequence per offset...")
+            sequences_by_offset = {}
+            for idx, seq in enumerate(sequences):
+                offset = seq.get('offset', 'unknown')
+                if offset not in sequences_by_offset:
+                    sequences_by_offset[offset] = []
+                sequences_by_offset[offset].append((idx, seq))
+            
+            first_sequence_indices = set()
+            for offset, offset_sequences in sequences_by_offset.items():
+                if len(offset_sequences) > 1:  # Only remove if there's more than one sequence
+                    # Get the first sequence index (assuming sequences are in order)
+                    first_idx = offset_sequences[0][0]
+                    first_sequence_indices.add(first_idx)
+                    print(f"    Offset {offset}: Removing first sequence (index: {first_idx})")
+            
+            if first_sequence_indices:
+                sequences_after_first_removal = [s for i, s in enumerate(sequences) if i not in first_sequence_indices]
+                print(f"  After removing first sequences: {len(sequences_after_first_removal)} sequences (removed {len(first_sequence_indices)} first sequences)")
+                print(f"  Expected after first removal: {len(sequences)} - {len(first_sequence_indices)} = {len(sequences) - len(first_sequence_indices)}")
+            else:
+                sequences_after_first_removal = sequences
+            
+            # Remove outliers (2 per offset, independently) from remaining sequences
+            print(f"  Removing outliers (2 per offset, independently)...")
+            print(f"  Expected after outlier removal: {len(sequences_after_first_removal)} - (5 offsets * 2 outliers) = {len(sequences_after_first_removal) - 10} sequences")
+            cleaned_sequences, outlier_indices = remove_outliers(sequences_after_first_removal, args.z_threshold, remove_per_offset=2)
+            print(f"  After outlier removal: {len(cleaned_sequences)} sequences (removed {len(outlier_indices)} outliers)")
+            
+            # Count sequences per offset to verify
+            offset_counts = {}
+            for seq in cleaned_sequences:
+                offset = seq.get('offset', 'unknown')
+                offset_counts[offset] = offset_counts.get(offset, 0) + 1
+            print(f"  Sequences per offset after cleaning: {offset_counts}")
+            print(f"  Expected per offset: 33 - 1 (first) - 2 (outliers) = 30")
             sequences_by_stretch[stretch] = cleaned_sequences
     
     if not sequences_by_stretch:
@@ -990,7 +1256,7 @@ def main():
     for stretch_label, sequences in sequences_by_stretch.items():
         # Use different GPU for each stretch level to parallelize training
         gpu_id = gpu_mapping.get(stretch_label, 0)
-        result = train_models_for_stretch(sequences, stretch_label, train_ratio=0.7, use_gpu=args.use_gpu, gpu_id=gpu_id)
+        result = train_models_for_stretch(sequences, stretch_label, train_ratio=0.7, use_gpu=args.use_gpu, gpu_id=gpu_id, feature_method=args.feature_method)
         trained_models[stretch_label] = result
         
     
@@ -998,7 +1264,7 @@ def main():
     print("\n" + "="*80)
     print("TRAINING COMBINED MODEL")
     print("="*80)
-    combined_result = train_combined_model(sequences_by_stretch, train_ratio=0.7, use_gpu=args.use_gpu)
+    combined_result = train_combined_model(sequences_by_stretch, train_ratio=0.7, use_gpu=args.use_gpu, feature_method=args.feature_method)
     trained_models['combined'] = combined_result
     
     # Save models
@@ -1031,6 +1297,191 @@ def main():
             stretch_path = models_dir / f"stretch_classifier_{model_name}.joblib"
             joblib.dump(result['stretch_model'], stretch_path)
             print(f"Saved: {stretch_path}")
+    
+    # Generate plots from cleaned sequences and confusion matrices
+    print("\n" + "="*80)
+    print("GENERATING PLOTS")
+    print("="*80)
+    
+    # Create plots directory
+    plots_dir = data_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Plot confusion matrices
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import ConfusionMatrixDisplay
+    
+    offset_names = ['center', 'ne', 'nw', 'se', 'sw']
+    
+    confusion_plots_saved = []
+    for model_name, result in trained_models.items():
+        if 'offset_confusion_matrix' in result and result['offset_confusion_matrix'] is not None:
+            cm = result['offset_confusion_matrix']
+            fig, ax = plt.subplots(figsize=(8, 7))
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=offset_names)
+            disp.plot(ax=ax, cmap='Blues', values_format='d')
+            ax.set_title(f'Offset Classification Confusion Matrix - {model_name}', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            confusion_plot_path = plots_dir / f"confusion_matrix_offset_{model_name}.png"
+            plt.savefig(confusion_plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved confusion matrix plot: {confusion_plot_path}")
+            confusion_plots_saved.append(confusion_plot_path)
+        
+        if 'stretch_confusion_matrix' in result and result['stretch_confusion_matrix'] is not None:
+            cm = result['stretch_confusion_matrix']
+            stretch_labels = ['000pct', '010pct', '020pct']
+            fig, ax = plt.subplots(figsize=(8, 7))
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=stretch_labels)
+            disp.plot(ax=ax, cmap='Blues', values_format='d')
+            ax.set_title(f'Stretch Classification Confusion Matrix - {model_name}', fontsize=14, fontweight='bold')
+            plt.tight_layout()
+            confusion_plot_path = plots_dir / f"confusion_matrix_stretch_{model_name}.png"
+            plt.savefig(confusion_plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved confusion matrix plot: {confusion_plot_path}")
+            confusion_plots_saved.append(confusion_plot_path)
+    
+    if confusion_plots_saved:
+        print(f"\n  Total confusion matrix plots saved: {len(confusion_plots_saved)}")
+        print(f"  Location: {plots_dir}")
+    else:
+        print(f"\n  ⚠️  No confusion matrices to plot")
+    
+    # Generate prediction plots (predicted vs actual Fz)
+    print("\n" + "="*80)
+    print("GENERATING PREDICTION PLOTS")
+    print("="*80)
+    
+    prediction_plots_saved = []
+    for model_name, result in trained_models.items():
+        if 'y_fz_test' in result and 'y_fz_pred' in result:
+            y_test = result['y_fz_test']
+            y_pred = result['y_fz_pred']
+            
+            if len(y_test) > 0 and len(y_pred) > 0:
+                # Scatter plot: Predicted vs Actual
+                fig, ax = plt.subplots(figsize=(8, 7))
+                ax.scatter(y_test, y_pred, alpha=0.5, s=20)
+                
+                # Perfect prediction line
+                min_val = min(np.min(y_test), np.min(y_pred))
+                max_val = max(np.max(y_test), np.max(y_pred))
+                ax.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2, label='Perfect prediction')
+                
+                ax.set_xlabel('Actual Fz (N)', fontsize=12)
+                ax.set_ylabel('Predicted Fz (N)', fontsize=12)
+                ax.set_title(f'Force Prediction - {model_name}\nRMSE: {result["force_rmse"]:.4f} N', fontsize=14, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+                
+                # Add R² value
+                from sklearn.metrics import r2_score
+                r2 = r2_score(y_test, y_pred)
+                ax.text(0.05, 0.95, f'R² = {r2:.4f}', transform=ax.transAxes,
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=11)
+                
+                plt.tight_layout()
+                prediction_plot_path = plots_dir / f"prediction_scatter_{model_name}.png"
+                plt.savefig(prediction_plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"  ✓ Saved prediction scatter plot: {prediction_plot_path}")
+                prediction_plots_saved.append(prediction_plot_path)
+                
+                # Residual plot
+                residuals = y_test - y_pred
+                fig, ax = plt.subplots(figsize=(8, 6))
+                ax.scatter(y_test, residuals, alpha=0.5, s=20)
+                ax.axhline(y=0, color='r', linestyle='--', lw=2)
+                ax.set_xlabel('Actual Fz (N)', fontsize=12)
+                ax.set_ylabel('Residuals (Actual - Predicted) (N)', fontsize=12)
+                ax.set_title(f'Residual Plot - {model_name}\nStd Dev: {result["force_std_dev"]:.4f} N', fontsize=14, fontweight='bold')
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                residual_plot_path = plots_dir / f"prediction_residuals_{model_name}.png"
+                plt.savefig(residual_plot_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"  ✓ Saved residual plot: {residual_plot_path}")
+                prediction_plots_saved.append(residual_plot_path)
+    
+    if prediction_plots_saved:
+        print(f"\n  Total prediction plots saved: {len(prediction_plots_saved)}")
+        print(f"  Location: {plots_dir}")
+    else:
+        print(f"\n  ⚠️  No prediction plots generated")
+    
+    # Generate plots from cleaned sequences using plot_raw_data
+    print("\nGenerating plots from cleaned sequences...")
+    print(f"  Plots will be saved to: {data_dir}/stretch_*_cleaned/")
+    try:
+        from training.plot_raw_data import main as plot_main
+        import sys as plot_sys
+        
+        # Save original sys.argv
+        original_argv = plot_sys.argv.copy()
+        
+        # Generate plots for each stretch level from cleaned sequences
+        plot_dirs_created = []
+        for stretch, sequences in sequences_by_stretch.items():
+            if not sequences:
+                print(f"  ⚠️  Skipping {stretch}: No sequences")
+                continue
+            
+            h5_file = h5_files.get(stretch)
+            if h5_file and h5_file.exists():
+                stretch_output_dir = data_dir / f"stretch_{stretch}_cleaned"
+                stretch_output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Use --h5-file for individual stretch plots
+                plot_sys.argv = [
+                    'plot_raw_data.py',
+                    '--h5-file', str(h5_file),
+                    '--output-dir', str(stretch_output_dir)
+                ]
+                
+                try:
+                    plot_main()
+                    print(f"  ✓ Plots generated for {stretch} (cleaned sequences)")
+                    print(f"    Location: {stretch_output_dir}")
+                    plot_dirs_created.append(stretch_output_dir)
+                except Exception as e:
+                    print(f"  ⚠️  Warning: Could not generate plots for {stretch}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"  ⚠️  Skipping {stretch}: HDF5 file not found")
+        
+        # Generate average plots (requires all HDF5 files together)
+        print("\nGenerating average plots (across all stretch levels)...")
+        if len(h5_files) >= 2:  # Need at least 2 files for average plots
+            try:
+                plot_sys.argv = [
+                    'plot_raw_data.py',
+                    '--h5-files'
+                ] + [str(h5_file) for h5_file in h5_files.values()] + [
+                    '--output-dir', str(data_dir)
+                ]
+                plot_main()
+                print(f"  ✓ Average plots generated")
+                print(f"    Location: {data_dir}")
+            except Exception as e:
+                print(f"  ⚠️  Warning: Could not generate average plots: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"  ⚠️  Skipping average plots: Need at least 2 HDF5 files (found {len(h5_files)})")
+        
+        # Restore original sys.argv
+        plot_sys.argv = original_argv
+        
+        if plot_dirs_created:
+            print(f"\n  ✓ Total plot directories created: {len(plot_dirs_created)}")
+        else:
+            print(f"\n  ⚠️  No plot directories created")
+    except Exception as e:
+        print(f"  ⚠️  Warning: Could not generate plots: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Prepare JSON report (compatible with evaluate_single_point_stretch.py format)
     print("\n" + "="*80)

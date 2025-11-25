@@ -207,7 +207,7 @@ class SensorReader:
                 
                 # Apply noise threshold for buffer (for plotting) - but keep raw for display
                 ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
-                
+                    
                 # Add to buffer for plotting
                 current_time = time.time()
                 if len(self.time_buffer) >= self.max_buffer_size:

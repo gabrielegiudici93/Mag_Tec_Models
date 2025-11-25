@@ -46,6 +46,8 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # =============================================================================
 TARGET_POSITION_ID = 32
 TARGET_OFFSETS = ['center', 'nw', 'ne', 'se', 'sw']
+# TARGET_OFFSETS = ['center']
+
 TARGET_POSITION_COORDS = [0.495774, 0.440503, 0.034311]#es; Z increased by 0.5mm (0.0005m)
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
@@ -64,7 +66,7 @@ BASE_OFFSETS = {
 }
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [0.00, 0.10, 0.20]
+STRETCH_LEVELS = [ 0.10]
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 PROMPT_FOR_RUN_LABEL = False  # Run label generated automatically
 
@@ -82,7 +84,7 @@ PRESS_STEP_MM = PRESS_DEPTH_MM  # Single indentation (no intermediate steps)
 STEPWISE_MODE = False           # Continuous press, single movement
 PRESS_HOLD_S = 1.0              # Hold at maximum indentation before lift
 DWELL_AFTER_LIFT_S = 0.5        # Pause after lift (seconds)
-PRESSES_PER_POINT = 31           # Number of press cycles per offset (discard first, keep 50)
+PRESSES_PER_POINT = 33           # Number of press cycles per offset
 
 # GUI flag (set False to disable visualization)
 ENABLE_GUI = True
@@ -144,6 +146,8 @@ class SkinTestSensorAdapter:
         self._lock = threading.Lock()
         self._poll_thread: threading.Thread | None = None
         self._poll_interval = config.PERIOD if hasattr(config, "PERIOD") else 0.01
+        # Track last reading to detect actual sensor updates (not just polling)
+        self._last_reading = None
 
     def start_sensors(self):
         self.running = True
@@ -152,6 +156,7 @@ class SkinTestSensorAdapter:
         self.time_buffer.clear()
         self._sensor_hz_counts = [0] * config.STRETCHMAGTEC_SENSORS
         self._last_hz_time = time.time()
+        self._last_reading = None  # Reset last reading tracker
         for buffer in self.individual_sensor_buffers.values():
             for key in buffer:
                 buffer[key].clear()
@@ -204,31 +209,45 @@ class SkinTestSensorAdapter:
                 current_time = time.time()
 
                 with self._lock:
+                    # Always update latest data for saving (100Hz saving is handled by ContinuousLoggerThread)
                     self._latest_data = data.copy()
                     self._latest_ft = ft_reading.copy()
 
-                    self.time_buffer.append(current_time)
-                    self.stretch_buffer.append(data.copy())
-                    self.ft_buffer.append(ft_reading.copy())
+                    # Check if data actually changed (for Hz counting and plotting)
+                    data_changed = False
+                    if self._last_reading is None:
+                        data_changed = True
+                    else:
+                        # Check if any sensor data changed (using a small threshold for floating point comparison)
+                        if not np.allclose(data, self._last_reading, atol=1e-6):
+                            data_changed = True
 
-                    if len(self.time_buffer) > self.max_buffer_size:
-                        self.time_buffer.pop(0)
-                        self.stretch_buffer.pop(0)
-                        self.ft_buffer.pop(0)
+                    # Only update buffers and count Hz when data actually changed
+                    if data_changed:
+                        self._last_reading = data.copy()
+                        
+                        self.time_buffer.append(current_time)
+                        self.stretch_buffer.append(data.copy())
+                        self.ft_buffer.append(ft_reading.copy())
 
-                    for sensor_id in range(config.STRETCHMAGTEC_SENSORS):
-                        sensor_buffer = self.individual_sensor_buffers[sensor_id]
-                        sensor_buffer['X'].append(data[sensor_id, 0])
-                        sensor_buffer['Y'].append(data[sensor_id, 1])
-                        sensor_buffer['Z'].append(data[sensor_id, 2])
-                        sensor_buffer['time'].append(current_time)
-                        if len(sensor_buffer['X']) > self.max_buffer_size:
-                            sensor_buffer['X'].pop(0)
-                            sensor_buffer['Y'].pop(0)
-                            sensor_buffer['Z'].pop(0)
-                            sensor_buffer['time'].pop(0)
+                        if len(self.time_buffer) > self.max_buffer_size:
+                            self.time_buffer.pop(0)
+                            self.stretch_buffer.pop(0)
+                            self.ft_buffer.pop(0)
 
-                        if not np.allclose(data[sensor_id], 0.0):
+                        for sensor_id in range(config.STRETCHMAGTEC_SENSORS):
+                            sensor_buffer = self.individual_sensor_buffers[sensor_id]
+                            sensor_buffer['X'].append(data[sensor_id, 0])
+                            sensor_buffer['Y'].append(data[sensor_id, 1])
+                            sensor_buffer['Z'].append(data[sensor_id, 2])
+                            sensor_buffer['time'].append(current_time)
+                            if len(sensor_buffer['X']) > self.max_buffer_size:
+                                sensor_buffer['X'].pop(0)
+                                sensor_buffer['Y'].pop(0)
+                                sensor_buffer['Z'].pop(0)
+                                sensor_buffer['time'].pop(0)
+
+                            # Count Hz only when data changed (sensor emitted new reading)
                             self._sensor_hz_counts[sensor_id] += 1
 
                     elapsed = current_time - self._last_hz_time
@@ -250,12 +269,29 @@ class SkinTestSensorAdapter:
             return self._latest_data.copy()
 
     def get_plot_data(self) -> Tuple[List[np.ndarray], List[np.ndarray], List[float]]:
+        # Minimize lock time - copy data quickly and release lock
+        # Limit data size to avoid heavy plotting operations
+        MAX_PLOT_POINTS = 500  # Limit to last 500 points for performance
+        
         with self._lock:
             if not self.time_buffer:
                 return [], [], []
-            t0 = self.time_buffer[0]
-            relative_time = [t - t0 for t in self.time_buffer]
-            return self.ft_buffer.copy(), self.stretch_buffer.copy(), relative_time
+            
+            # Get data slices (last N points for performance)
+            start_idx = max(0, len(self.time_buffer) - MAX_PLOT_POINTS)
+            time_slice = self.time_buffer[start_idx:]
+            ft_slice = self.ft_buffer[start_idx:] if self.ft_buffer else []
+            stretch_slice = self.stretch_buffer[start_idx:] if self.stretch_buffer else []
+            
+            # Calculate relative time
+            if time_slice:
+                t0 = time_slice[0]
+                relative_time = [t - t0 for t in time_slice]
+            else:
+                relative_time = []
+            
+            # Return copies (lock released immediately after this)
+            return ft_slice.copy(), stretch_slice.copy(), relative_time
 
     # --- Internal helpers ---------------------------------------------------------------
     @staticmethod
@@ -529,13 +565,23 @@ def launch_predictor_gui(collection_done_event: threading.Event):
 
     adapter.start_sensors()
     gui.update_running = True
+    
+    # Plot update control - update plots less frequently to avoid blocking sensor thread
+    plot_update_counter = 0
+    plot_update_interval = 5  # Update plots every 5 GUI updates (reduces load)
+    plot_update_enabled = True  # Can be toggled if needed
 
     def gui_update_loop():
+        nonlocal plot_update_counter
+        
         if not gui.update_running:
             return
+        
+        # Fast sensor data reading (no heavy operations)
         stretchmagtec_data = gui.sensor_reader.get_stretchmagtec_data()
         ft_data = gui.sensor_reader.get_ft_data()
 
+        # Update text labels (fast, non-blocking)
         for i, value in enumerate(ft_data):
             color = "red" if abs(value) > 1.0 else "black"
             gui.ft_labels[i].config(text=f"{['Fx (N)','Fy (N)','Fz (N)','Tx (Nm)','Ty (Nm)','Tz (Nm)'][i]}: {value:7.3f}", foreground=color)
@@ -559,66 +605,95 @@ def launch_predictor_gui(collection_done_event: threading.Event):
         for lbl in gui.force_pred_labels:
             lbl.config(text="Fx/Fy/Fz: --", foreground="gray")
 
-        ft_data_plot, stretch_data_plot, time_data_plot = gui.sensor_reader.get_plot_data()
-        if time_data_plot and gui.selected_sensors:
-            gui.ax1.clear()
-            gui.ax2.clear()
-            gui.ax3.clear()
-            gui.ax4.clear()
+        # Update plots less frequently to avoid blocking sensor thread
+        plot_update_counter += 1
+        should_update_plots = (plot_update_counter % plot_update_interval == 0) and plot_update_enabled
+        
+        if should_update_plots:
+            # Get plot data (lock is held briefly, then released immediately)
+            # This is the ONLY place where we hold the lock - minimize time
+            ft_data_plot, stretch_data_plot, time_data_plot = gui.sensor_reader.get_plot_data()
+            
+            # Schedule plot update in a separate "after" call to avoid blocking
+            # This ensures the sensor thread is not blocked by plotting operations
+            def update_plots_async():
+                # Only update plots if we have data and sensors selected
+                # Do heavy plotting operations outside the lock
+                if time_data_plot and gui.selected_sensors and len(time_data_plot) > 0:
+                    try:
+                        # Clear plots (fast operation)
+                        gui.ax1.clear()
+                        gui.ax2.clear()
+                        gui.ax3.clear()
+                        gui.ax4.clear()
 
-            gui.ax1.set_title("FT Sensor Data")
-            gui.ax1.set_ylabel("Force/Torque")
-            gui.ax1.set_xlabel("Time (s)")
-            gui.ax1.grid(True, alpha=0.3)
+                        # Set titles and labels (fast)
+                        gui.ax1.set_title("FT Sensor Data")
+                        gui.ax1.set_ylabel("Force/Torque")
+                        gui.ax1.set_xlabel("Time (s)")
+                        gui.ax1.grid(True, alpha=0.3)
 
-            gui.ax2.set_title("StretchMagTec X-Axis")
-            gui.ax2.set_ylabel("Magnetic Field")
-            gui.ax2.set_xlabel("Time (s)")
-            gui.ax2.grid(True, alpha=0.3)
+                        gui.ax2.set_title("StretchMagTec X-Axis")
+                        gui.ax2.set_ylabel("Magnetic Field")
+                        gui.ax2.set_xlabel("Time (s)")
+                        gui.ax2.grid(True, alpha=0.3)
 
-            gui.ax3.set_title("StretchMagTec Y-Axis")
-            gui.ax3.set_ylabel("Magnetic Field")
-            gui.ax3.set_xlabel("Time (s)")
-            gui.ax3.grid(True, alpha=0.3)
+                        gui.ax3.set_title("StretchMagTec Y-Axis")
+                        gui.ax3.set_ylabel("Magnetic Field")
+                        gui.ax3.set_xlabel("Time (s)")
+                        gui.ax3.grid(True, alpha=0.3)
 
-            gui.ax4.set_title("StretchMagTec Z-Axis")
-            gui.ax4.set_ylabel("Magnetic Field")
-            gui.ax4.set_xlabel("Time (s)")
-            gui.ax4.grid(True, alpha=0.3)
+                        gui.ax4.set_title("StretchMagTec Z-Axis")
+                        gui.ax4.set_ylabel("Magnetic Field")
+                        gui.ax4.set_xlabel("Time (s)")
+                        gui.ax4.grid(True, alpha=0.3)
 
-            if ft_data_plot:
-                fx = [entry[0] for entry in ft_data_plot]
-                fy = [entry[1] for entry in ft_data_plot]
-                fz = [entry[2] for entry in ft_data_plot]
-                gui.ax1.plot(time_data_plot, fx, label="Fx")
-                gui.ax1.plot(time_data_plot, fy, label="Fy")
-                gui.ax1.plot(time_data_plot, fz, label="Fz")
-                gui.ax1.legend(loc="upper right")
+                        # Plot FT data (optimized - use numpy arrays)
+                        if ft_data_plot and len(ft_data_plot) > 0:
+                            ft_array = np.array(ft_data_plot)
+                            if len(time_data_plot) == len(ft_array):
+                                gui.ax1.plot(time_data_plot, ft_array[:, 0], label="Fx", linewidth=1.5)
+                                gui.ax1.plot(time_data_plot, ft_array[:, 1], label="Fy", linewidth=1.5)
+                                gui.ax1.plot(time_data_plot, ft_array[:, 2], label="Fz", linewidth=1.5)
+                                gui.ax1.legend(loc="upper right", fontsize=8)
 
-            for sensor_id in sorted(gui.selected_sensors):
-                if sensor_id < len(stretch_data_plot):
-                    series = [entry[sensor_id, :] for entry in stretch_data_plot]
-                    x_series = [val[0] for val in series]
-                    y_series = [val[1] for val in series]
-                    z_series = [val[2] for val in series]
+                        # Plot magnetic data (optimized - use numpy arrays)
+                        if stretch_data_plot and len(stretch_data_plot) > 0:
+                            stretch_array = np.array(stretch_data_plot)  # Shape: [time, sensors, channels]
+                            if len(time_data_plot) == len(stretch_array):
+                                for sensor_id in sorted(gui.selected_sensors):
+                                    if sensor_id < stretch_array.shape[1]:
+                                        # Direct array indexing (much faster than list comprehension)
+                                        x_data = stretch_array[:, sensor_id, 0]
+                                        y_data = stretch_array[:, sensor_id, 1]
+                                        z_data = stretch_array[:, sensor_id, 2]
+                                        
+                                        gui.ax2.plot(time_data_plot, x_data, label=f"S{sensor_id+1}", linewidth=1.5)
+                                        gui.ax3.plot(time_data_plot, y_data, label=f"S{sensor_id+1}", linewidth=1.5)
+                                        gui.ax4.plot(time_data_plot, z_data, label=f"S{sensor_id+1}", linewidth=1.5)
 
-                    gui.ax2.plot(time_data_plot, x_series, label=f"S{sensor_id+1}")
-                    gui.ax3.plot(time_data_plot, y_series, label=f"S{sensor_id+1}")
-                    gui.ax4.plot(time_data_plot, z_series, label=f"S{sensor_id+1}")
+                                if gui.selected_sensors:
+                                    legend_labels = [f"S{s+1}" for s in sorted(gui.selected_sensors)]
+                                    gui.ax2.set_title(f"StretchMagTec X-Axis: {legend_labels}")
+                                    gui.ax3.set_title(f"StretchMagTec Y-Axis: {legend_labels}")
+                                    gui.ax4.set_title(f"StretchMagTec Z-Axis: {legend_labels}")
 
-            if gui.selected_sensors:
-                legend_labels = [f"S{s+1}" for s in sorted(gui.selected_sensors)]
-                gui.ax2.set_title(f"StretchMagTec X-Axis: {legend_labels}")
-                gui.ax3.set_title(f"StretchMagTec Y-Axis: {legend_labels}")
-                gui.ax4.set_title(f"StretchMagTec Z-Axis: {legend_labels}")
+                                    gui.ax2.legend(loc="upper right", fontsize=8)
+                                    gui.ax3.legend(loc="upper right", fontsize=8)
+                                    gui.ax4.legend(loc="upper right", fontsize=8)
 
-                gui.ax2.legend(loc="upper right", fontsize=8)
-                gui.ax3.legend(loc="upper right", fontsize=8)
-                gui.ax4.legend(loc="upper right", fontsize=8)
+                        # Update layout and draw (this is the slowest part)
+                        gui.fig.tight_layout()
+                        gui.canvas.draw_idle()  # Use draw_idle() for non-blocking update
+                        
+                    except Exception as e:
+                        # Don't let plotting errors crash the GUI
+                        print(f"Plotting error (non-critical): {e}")
+            
+            # Schedule plot update asynchronously (non-blocking)
+            gui.root.after_idle(update_plots_async)
 
-            gui.fig.tight_layout()
-            gui.canvas.draw_idle()
-
+        # Schedule next GUI update (always, regardless of plot update)
         gui.root.after(gui.update_interval, gui_update_loop)
 
     gui.root.after(gui.update_interval, gui_update_loop)
@@ -682,9 +757,22 @@ def run_data_collection(collection_done_event: threading.Event):
 
 def signal_handler(signum, frame):
     """Handle SIGINT (Ctrl+C) signal - must be in main thread"""
-    print("\n\n⚠️  SIGINT (Ctrl+C) received - requesting shutdown...")
+    print("\n\n🛑 SIGINT (Ctrl+C) received - EMERGENCY STOP!")
+    print("  Stopping robot immediately...")
+    
     # Import here to avoid circular import
     import franka_controller.franka_skin_test as skin_test
+    
+    # Stop robot IMMEDIATELY - this is critical
+    # Try to get robot instance and stop it directly
+    try:
+        if hasattr(skin_test, 'r') and skin_test.r is not None:
+            skin_test.r.stop()
+            print("  ✅ Robot stopped")
+    except Exception as e:
+        print(f"  ⚠️  Error stopping robot: {e}")
+    
+    # Set shutdown flag to stop all threads
     skin_test.set_shutdown_requested()
 
 

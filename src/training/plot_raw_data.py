@@ -9,11 +9,21 @@ import re
 import sys
 from pathlib import Path
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Import outlier removal functions from train_single_point_models
+try:
+    from training.train_single_point_models import identify_outliers, remove_outliers
+except ImportError:
+    # Fallback if import fails
+    def identify_outliers(sequences, z_threshold=3.0):
+        return []
+    def remove_outliers(sequences, z_threshold=3.0, remove_per_offset=2):
+        return sequences, []
 
 def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offset: bool = False) -> Dict[str, Dict]:
     """Load raw sequences grouped by press_id.
@@ -119,6 +129,32 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
                     if len(seq_time) > 0 and seq_time[0] != 0:
                         seq_time = seq_time - seq_time[0]
                     
+                    # Cut sequence at 3N: keep only samples where Fz <= 3.0N
+                    fz_data = press_forces[:, 2]  # Fz component
+                    fz_cut_mask = np.abs(fz_data) <= 3.0
+                    cut_idx = len(press_forces)  # Default: no cut
+                    if np.any(~fz_cut_mask):
+                        # Find first index where Fz exceeds 3N
+                        first_exceed_idx = np.where(~fz_cut_mask)[0]
+                        if len(first_exceed_idx) > 0:
+                            cut_idx = first_exceed_idx[0]
+                            press_forces = press_forces[:cut_idx]
+                            seq_time = seq_time[:cut_idx]
+                            if 'stretchmagtec' in press_group:
+                                press_mag = press_group['stretchmagtec'][:cut_idx]
+                            else:
+                                press_mag = None
+                        else:
+                            if 'stretchmagtec' in press_group:
+                                press_mag = press_group['stretchmagtec'][:]
+                            else:
+                                press_mag = None
+                    else:
+                        if 'stretchmagtec' in press_group:
+                            press_mag = press_group['stretchmagtec'][:]
+                        else:
+                            press_mag = None
+                    
                     seq_data = {
                         'indices': list(range(len(press_forces))),
                         'time': seq_time,
@@ -130,8 +166,7 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
                     }
                     
                     # Add magnetic sensor channel 8
-                    if 'stretchmagtec' in press_group:
-                        press_mag = press_group['stretchmagtec'][:]  # [samples, 15, 3]
+                    if press_mag is not None:
                         seq_data['mag_ch8_z'] = press_mag[:, 7, 2]
                         seq_data['mag_ch8'] = press_mag[:, 7, :]
                         seq_data['mag_all_channels'] = press_mag[:, :, :]
@@ -144,15 +179,17 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
                         seq_data['mag_ch8'] = stretchmagtec[indices, 7, :]
                         seq_data['mag_all_channels'] = stretchmagtec[indices, :, :]
                     
-                    # Add indentation data if available
+                    # Add indentation data if available (must be cut to same length)
                     if 'indentation' in press_group:
-                        seq_data['indentation'] = press_group['indentation'][:]
+                        indentation_data = press_group['indentation'][:]
+                        seq_data['indentation'] = indentation_data[:cut_idx] if cut_idx < len(indentation_data) else indentation_data
                     elif 'positions' in press_group:
                         # Calculate indentation from positions if not directly available
                         positions = press_group['positions'][:]  # [samples, 3]
                         if len(positions) > 0:
                             initial_z = positions[0, 2]
-                            seq_data['indentation'] = positions[:, 2] - initial_z
+                            indentation_data = positions[:, 2] - initial_z
+                            seq_data['indentation'] = indentation_data[:cut_idx] if cut_idx < len(indentation_data) else indentation_data
                     
                     # Use press_id as key, but handle duplicates by appending number
                     key = press_id if press_id else press_key
@@ -225,6 +262,18 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
                     # Normalize time to start from 0
                     seq_time = time_relative[indices] - time_relative[indices[0]]
                     
+                    # Cut sequence at 3N: keep only samples where Fz <= 3.0N
+                    fz_data = forces[indices, 2]  # Fz component
+                    fz_cut_mask = np.abs(fz_data) <= 3.0
+                    cut_idx = len(indices)  # Default: no cut
+                    if np.any(~fz_cut_mask):
+                        # Find first index where Fz exceeds 3N
+                        first_exceed_idx = np.where(~fz_cut_mask)[0]
+                        if len(first_exceed_idx) > 0:
+                            cut_idx = first_exceed_idx[0]
+                            indices = indices[:cut_idx]
+                            seq_time = seq_time[:cut_idx]
+                    
                     seq_data = {
                         'indices': indices,
                         'time': seq_time,
@@ -234,6 +283,12 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
                         'press_id': press_id,
                         'offset': offset
                     }
+                    
+                    # Add indentation if available (must be cut to same length)
+                    # Note: indentation is not in the old format sequences, but we check anyway
+                    if 'indentation' in locals() and len(indentation) > 0:
+                        if len(indentation) >= len(indices):
+                            seq_data['indentation'] = indentation[:cut_idx] if cut_idx < len(indentation) else indentation
                     
                     # Add magnetic sensor channel 8
                     if stretchmagtec is not None:
@@ -657,11 +712,23 @@ def plot_average_by_offset_and_stretch(h5_files: List[Path], output_dir: Path):
     # Expected offsets
     expected_offsets = ['center', 'ne', 'nw', 'se', 'sw']
     
+    # Color mapping for stretch levels (normalize labels to percentage format)
+    def normalize_stretch_label(label):
+        """Normalize stretch label to percentage format (e.g., 'stretch_000pct' -> '0%')."""
+        label_str = str(label).lower()
+        if '000' in label_str or '0%' in label_str:
+            return '0%'
+        elif '010' in label_str or '10%' in label_str:
+            return '10%'
+        elif '020' in label_str or '20%' in label_str:
+            return '20%'
+        return label
+    
     # For each offset, create a plot with average for each stretch level
     for offset in expected_offsets:
         fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=True)
         
-        colors = {'0%': 'blue', '10%': 'green', '20%': 'red'}
+        colors = {'0%': '#1f77b4', '10%': '#ff7f0e', '20%': '#2ca02c'}  # Blue, Orange, Green
         
         for stretch_label in sorted(stretch_files.keys()):
             if stretch_label == "unknown":
@@ -694,7 +761,8 @@ def plot_average_by_offset_and_stretch(h5_files: List[Path], output_dir: Path):
                 avg_fz = np.mean(interpolated_fz, axis=0)
                 std_fz = np.std(interpolated_fz, axis=0)
                 
-                color = colors.get(stretch_label, 'gray')
+                normalized_label = normalize_stretch_label(stretch_label)
+                color = colors.get(normalized_label, '#d62728')  # Red as fallback instead of gray
                 axes[0].plot(common_time, avg_fz, label=f'{stretch_label} (n={len(all_seqs_for_offset)})', 
                            color=color, linewidth=2, alpha=0.8)
                 axes[0].fill_between(common_time, avg_fz - std_fz, avg_fz + std_fz, 
@@ -715,7 +783,8 @@ def plot_average_by_offset_and_stretch(h5_files: List[Path], output_dir: Path):
                         avg_mag = np.mean(interpolated_mag, axis=0)
                         std_mag = np.std(interpolated_mag, axis=0)
                         
-                        color = colors.get(stretch_label, 'gray')
+                        normalized_label = normalize_stretch_label(stretch_label)
+                        color = colors.get(normalized_label, '#d62728')  # Red as fallback instead of gray
                         ax.plot(common_time, avg_mag, label=f'{stretch_label} (n={len(all_seqs_for_offset)})', 
                                color=color, linewidth=2, alpha=0.8)
                         ax.fill_between(common_time, avg_mag - std_mag, avg_mag + std_mag, 
@@ -909,7 +978,19 @@ def plot_average_all_points_by_stretch(h5_files: List[Path], output_path: Path):
     # Compute average for each stretch level
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    colors = {'0%': 'blue', '10%': 'green', '20%': 'red'}
+    # Color mapping for stretch levels (normalize labels to percentage format)
+    def normalize_stretch_label(label):
+        """Normalize stretch label to percentage format (e.g., 'stretch_000pct' -> '0%')."""
+        label_str = str(label).lower()
+        if '000' in label_str or '0%' in label_str:
+            return '0%'
+        elif '010' in label_str or '10%' in label_str:
+            return '10%'
+        elif '020' in label_str or '20%' in label_str:
+            return '20%'
+        return label
+    
+    colors = {'0%': '#1f77b4', '10%': '#ff7f0e', '20%': '#2ca02c'}  # Blue, Orange, Green
     
     for stretch_label in sorted(stretch_data.keys()):
         if stretch_label == "unknown":
@@ -919,8 +1000,15 @@ def plot_average_all_points_by_stretch(h5_files: List[Path], output_path: Path):
             continue
         
         # Interpolate all sequences to a common time grid
-        # Find max duration
-        max_duration = max(seq['time'][-1] if len(seq['time']) > 0 else 0 for seq in seqs)
+        # Find max duration - use 95th percentile to avoid outliers
+        durations = [seq['time'][-1] if len(seq['time']) > 0 else 0 for seq in seqs]
+        if durations:
+            # Use 95th percentile instead of max to avoid very long sequences
+            max_duration = np.percentile(durations, 95)
+            # But also cap at reasonable maximum (e.g., 10 seconds)
+            max_duration = min(max_duration, 10.0)
+        else:
+            max_duration = 10.0
         
         # Create common time grid (100 Hz sampling)
         common_time = np.linspace(0, max_duration, int(max_duration * 100) + 1)
@@ -941,7 +1029,8 @@ def plot_average_all_points_by_stretch(h5_files: List[Path], output_path: Path):
         avg_fz = np.mean(interpolated_fz, axis=0)
         std_fz = np.std(interpolated_fz, axis=0)
         
-        color = colors.get(stretch_label, 'gray')
+        normalized_label = normalize_stretch_label(stretch_label)
+        color = colors.get(normalized_label, '#d62728')  # Red as fallback instead of gray
         ax.plot(common_time, avg_fz, label=f'{stretch_label} stretch (avg, n={len(seqs)})', 
                 color=color, linewidth=2, alpha=0.8)
         ax.fill_between(common_time, avg_fz - std_fz, avg_fz + std_fz, 
@@ -1019,6 +1108,41 @@ def main():
                 for offset, seqs in sequences_by_offset.items():
                     all_sequences_by_offset[offset].extend(seqs)
             
+            # Remove first sequence per offset (warm-up/calibration sequence) BEFORE outlier removal
+            print(f"\nRemoving first sequence per offset...")
+            for offset, seqs in all_sequences_by_offset.items():
+                if len(seqs) > 1:  # Only remove if there's more than one sequence
+                    all_sequences_by_offset[offset] = seqs[1:]  # Remove first sequence
+                    print(f"  Offset {offset}: Removed first sequence, {len(seqs)} -> {len(seqs) - 1} sequences")
+            
+            # Remove 2 outliers per offset before plotting
+            print(f"\nRemoving 2 outliers per offset before plotting...")
+            for offset, seqs in all_sequences_by_offset.items():
+                if len(seqs) > 2:
+                    # Convert sequences to format expected by remove_outliers
+                    seqs_dict = []
+                    for seq in seqs:
+                        seq_dict = {
+                            'offset': offset,
+                            'duration': seq['time'][-1] - seq['time'][0] if len(seq['time']) > 1 else len(seq['fz']) / 100.0,
+                            'max_fz': float(np.max(seq['fz'])),
+                            'num_samples': len(seq['fz']),
+                            'fz_max': float(np.max(seq['fz'])),
+                        }
+                        seqs_dict.append(seq_dict)
+                    
+                    # Remove outliers
+                    cleaned_seqs_dict, outlier_indices = remove_outliers(seqs_dict, z_threshold=3.0, remove_per_offset=2)
+                    if outlier_indices:
+                        # Remove corresponding sequences
+                        cleaned_seqs = [seq for i, seq in enumerate(seqs) if i not in outlier_indices]
+                        all_sequences_by_offset[offset] = cleaned_seqs
+                        print(f"  Offset {offset}: Removed {len(outlier_indices)} outliers, {len(seqs)} -> {len(cleaned_seqs)} sequences")
+                    else:
+                        all_sequences_by_offset[offset] = seqs
+                else:
+                    all_sequences_by_offset[offset] = seqs
+            
             # Plot sequences by offset (10 presses per point)
             print(f"\nGenerating plots for each offset point...")
             plot_sequences_by_offset(all_sequences_by_offset, stretch_dir, stretch_label)
@@ -1058,6 +1182,30 @@ def main():
         
         # Load sequences grouped by offset for separate position plots
         sequences_by_offset = load_raw_sequences(args.h5_file, complete_only=True, group_by_offset=True)
+        
+        # Remove 2 outliers per offset before plotting
+        print(f"\nRemoving 2 outliers per offset before plotting...")
+        for offset, seqs in sequences_by_offset.items():
+            if len(seqs) > 2:
+                # Convert sequences to format expected by remove_outliers
+                seqs_dict = []
+                for seq in seqs:
+                    seq_dict = {
+                        'offset': offset,
+                        'duration': seq['time'][-1] - seq['time'][0] if len(seq['time']) > 1 else len(seq['fz']) / 100.0,
+                        'max_fz': float(np.max(seq['fz'])),
+                        'num_samples': len(seq['fz']),
+                        'fz_max': float(np.max(seq['fz'])),
+                    }
+                    seqs_dict.append(seq_dict)
+                
+                # Remove outliers
+                cleaned_seqs_dict, outlier_indices = remove_outliers(seqs_dict, z_threshold=3.0, remove_per_offset=2)
+                if outlier_indices:
+                    # Remove corresponding sequences
+                    cleaned_seqs = [seq for i, seq in enumerate(seqs) if i not in outlier_indices]
+                    sequences_by_offset[offset] = cleaned_seqs
+                    print(f"  Offset {offset}: Removed {len(outlier_indices)} outliers, {len(seqs)} -> {len(cleaned_seqs)} sequences")
         
         # Extract stretch label from filename or file attributes
         stretch_label = "unknown"
@@ -1342,5 +1490,7 @@ def plot_all_magnetic_channels(sequences: Dict[str, Dict], output_dir: Path, max
 
 if __name__ == "__main__":
     main()
+
+
 
 

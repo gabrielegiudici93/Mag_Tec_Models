@@ -128,7 +128,7 @@ The manufacturer's specifications indicate that the FT-300S is not reliable for 
 \subsection{Press Grid}
 The study targets a single central position (\texttt{TARGET\_POSITION\_ID = 32}) at coordinates
 \[
-    \text{TARGET\_POSITION\_COORDS} = [0.496776, 0.438500, 0.031811] \text{ m},
+    \text{TARGET\_POSITION\_COORDS} = [0.495774, 0.440503, 0.034311] \text{ m},
 \]
 together with four neighbour offsets \(\{\text{NW}, \text{NE}, \text{SE}, \text{SW}\}\), plus the centre. Baseline offsets
 are defined by the constants
@@ -165,9 +165,9 @@ horizontal direction). Data for each stretch level are stored in dedicated direc
         Parameter & Value / Description \\
         \midrule
         Press mode & Force-controlled pressing from \SI{0.0}{\newton} to \SI{3.0}{\newton} in \SI{0.1}{\newton} steps. \\
-        Force step delay & \SI{0.0}{\second} (configurable, typically \SI{1.0}{\second} for data collection). \\
+        Force step delay & \SI{0.1}{\second} (configurable, typically \SI{0.1}{\second} for data collection). \\
         Force tolerance & \SI{0.01}{\newton} tolerance for reaching target force. \\
-        Presses per offset & 51 press cycles per offset (first press discarded, 50 usable repetitions). \\
+        Presses per offset & 33 press cycles per offset. \\
         Movement between offsets & Robot lifts \SI{5}{\milli\metre} before moving horizontally, then lowers \SI{5}{\milli\metre} at target position to avoid sliding on surface. This lift-lower protocol ensures clean transitions between offset positions. \\
         Dwell after lift & \SI{0.5}{\second} pause before moving to the next offset. \\
         Return-to-centre & After each stretch run the robot reverts to the central pose for re-tensioning. \\
@@ -274,13 +274,13 @@ The two sensors are treated independently, ensuring that artifacts in one sensor
 The force values \(F_z\) are normalized to a target range \([0, 3]\)~N to standardize the output distribution. The original force range \([F_{z,\min}, F_{z,\max}]\) is stored as part of the model metadata (fz\_scaler) to enable correct denormalization during inference. For simulation data, where forces are negative (0 to -3~N), absolute values are used during training, and the negative sign is restored during plotting.
 
 \subsubsection{Outlier Removal}
-Sequences with anomalous characteristics are removed using Median Absolute Deviation (MAD) outlier detection. The following metrics are evaluated:
+Sequences with anomalous characteristics are removed using Median Absolute Deviation (MAD) outlier detection. The outlier removal process is applied \emph{independently for each offset position} (center, nw, ne, se, sw), ensuring that outlier detection is tailored to the specific characteristics of each press location. For each offset, the two most extreme outlier sequences are removed based on the following metrics:
 \begin{itemize}[leftmargin=1.5em]
     \item Sequence duration (outliers in temporal length)
     \item Maximum force \(F_z\) (outliers in force magnitude)
     \item Number of samples (outliers in sequence length)
 \end{itemize}
-Sequences exceeding a Z-score threshold of 3.0 are considered outliers and excluded from training.
+Outlier detection uses a Z-score threshold of 3.0, and the two sequences with the highest combined outlier scores are removed per offset. This per-offset approach ensures that each press location is evaluated independently, preventing outliers in one location from affecting the analysis of another. The same outlier removal procedure is applied both during model training and before plot generation to ensure consistency between analysis and visualization.
 
 \subsubsection{Dataset Balancing}
 To ensure fair comparison across stretch levels, sequences are balanced so that each stretch level contributes an equal number of sequences to the training set. This prevents bias toward stretch levels with more data.
@@ -493,7 +493,7 @@ directly.
         \toprule
         Run label & Type & Stretch levels & Offsets & Artefacts & Notes \\
         \midrule
-        Single\_Point/force\_0.0to3.0N\_step0.1N\_single\_test1 & Single-point & 0, 10, 20\% & centre, nw, ne, se, sw & models/, scalers/, metrics JSON & Force-controlled pressing (0--3~N, 0.1~N steps), 51 presses per offset. \\
+        Single\_Point/force\_0.0to3.0N\_step0.1N\_single\_test1 & Single-point & 0, 10, 20\% & centre, nw, ne, se, sw & models/, scalers/, metrics JSON & Force-controlled pressing (0--3~N, 0.1~N steps), 33 presses per offset. Outlier removal: 2 per offset independently. \\
         data/simulation/test2 & Simulation & 0, 10, 20\% & centre, nw, ne, se, sw & models/, scalers/, metrics JSON & Synthetic data with same preprocessing pipeline as physical data. \\
         \bottomrule
     \end{tabularx}
@@ -586,10 +586,192 @@ The classifier achieves moderate accuracy, indicating that stretch detection fro
 
 \subsection{Visual Summaries}
 \label{sec:visual-summaries}
-Time-series plots showing measured vs. predicted forces during continuous indentation sequences are generated automatically for both physical and simulation datasets. The plots display all validation sequences overlapped, with time normalized to start from 0 seconds for each sequence.
+Time-series plots showing measured vs. predicted forces during continuous indentation sequences are generated automatically for both physical and simulation datasets. The plots display all validation sequences overlapped, with time normalized to start from 0 seconds for each sequence. \textbf{Important:} All plots are generated after outlier removal (2 outliers per offset independently), ensuring that only high-quality sequences are visualized.
 
-\subsubsection{Physical Data Plots}
-Figure~\ref{fig:physical-000-all} shows all validation sequences for the 0\% stretch condition, demonstrating the model's performance across multiple press cycles. Figures~\ref{fig:physical-010-all} and~\ref{fig:physical-020-all} show the corresponding plots for 10\% and 20\% stretch levels.
+\subsubsection{Raw Data Overview Plots}
+The following plots provide an overview of the entire dataset for each stretch level, showing all sequences from all offsets:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_all_sequences.png}
+    \caption{All press sequences for 0\% stretch – single-point test~1. This plot shows all sequences from all offset positions overlapped, displaying Fz force over time for the entire dataset. Sequences are shown after outlier removal (2 per offset).}
+    \label{fig:raw-all-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_all_sequences.png}
+    \caption{All press sequences for 10\% stretch – single-point test~1. Overview of all sequences from all offset positions.}
+    \label{fig:raw-all-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_all_sequences.png}
+    \caption{All press sequences for 20\% stretch – single-point test~1. Overview of all sequences from all offset positions.}
+    \label{fig:raw-all-020}
+\end{figure}
+
+\subsubsection{Force vs. Magnetic Sensor Correlation}
+The following plots demonstrate the correlation between applied force (Fz from FT sensor) and magnetic field response (channel 8, Z component):
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_fz_ft_vs_magnetic_ch8.png}
+    \caption{Force vs. magnetic sensor correlation for 0\% stretch – single-point test~1. This plot shows the relationship between Fz force (from FT sensor) and magnetic sensor channel 8 (Z component), demonstrating the correlation between applied force and magnetic field response.}
+    \label{fig:fz-mag-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_fz_ft_vs_magnetic_ch8.png}
+    \caption{Force vs. magnetic sensor correlation for 10\% stretch – single-point test~1.}
+    \label{fig:fz-mag-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_fz_ft_vs_magnetic_ch8.png}
+    \caption{Force vs. magnetic sensor correlation for 20\% stretch – single-point test~1.}
+    \label{fig:fz-mag-020}
+\end{figure}
+
+\subsubsection{Magnetic Sensor Channel 8 Sequences}
+The following plots show all sequences of magnetic sensor channel 8 (X, Y, Z components) over time:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_magnetic_ch8_all_sequences.png}
+    \caption{All sequences of magnetic sensor channel 8 for 0\% stretch – single-point test~1. This plot shows all sequences of magnetic sensor channel 8 (X, Y, Z components) over time, providing insight into the magnetic field variations during pressing.}
+    \label{fig:mag-ch8-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_magnetic_ch8_all_sequences.png}
+    \caption{All sequences of magnetic sensor channel 8 for 10\% stretch – single-point test~1.}
+    \label{fig:mag-ch8-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_magnetic_ch8_all_sequences.png}
+    \caption{All sequences of magnetic sensor channel 8 for 20\% stretch – single-point test~1.}
+    \label{fig:mag-ch8-020}
+\end{figure}
+
+\subsubsection{Offset-Specific Plots}
+The following plots show individual sequences for each offset position (center, nw, ne, se, sw) at each stretch level. These plots are generated after outlier removal (2 outliers per offset independently):
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_offset_center_stretch_000pct.png}
+    \caption{Center offset sequences for 0\% stretch – single-point test~1. All press sequences at the center position, showing Fz, Indentation, and Mag Ch8 X/Y/Z components. Sequences shown after outlier removal (2 outliers removed).}
+    \label{fig:offset-center-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_offset_nw_stretch_000pct.png}
+    \caption{Northwest (NW) offset sequences for 0\% stretch – single-point test~1.}
+    \label{fig:offset-nw-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_offset_ne_stretch_000pct.png}
+    \caption{Northeast (NE) offset sequences for 0\% stretch – single-point test~1.}
+    \label{fig:offset-ne-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_offset_sw_stretch_000pct.png}
+    \caption{Southwest (SW) offset sequences for 0\% stretch – single-point test~1.}
+    \label{fig:offset-sw-000}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_000pct/raw_data_offset_se_stretch_000pct.png}
+    \caption{Southeast (SE) offset sequences for 0\% stretch – single-point test~1.}
+    \label{fig:offset-se-000}
+\end{figure}
+
+\subsubsection{10\% Stretch Offset Plots}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_offset_center_stretch_010pct.png}
+    \caption{Center offset sequences for 10\% stretch – single-point test~1.}
+    \label{fig:offset-center-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_offset_nw_stretch_010pct.png}
+    \caption{Northwest (NW) offset sequences for 10\% stretch – single-point test~1.}
+    \label{fig:offset-nw-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_offset_ne_stretch_010pct.png}
+    \caption{Northeast (NE) offset sequences for 10\% stretch – single-point test~1.}
+    \label{fig:offset-ne-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_offset_sw_stretch_010pct.png}
+    \caption{Southwest (SW) offset sequences for 10\% stretch – single-point test~1.}
+    \label{fig:offset-sw-010}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_010pct/raw_data_offset_se_stretch_010pct.png}
+    \caption{Southeast (SE) offset sequences for 10\% stretch – single-point test~1.}
+    \label{fig:offset-se-010}
+\end{figure}
+
+\subsubsection{20\% Stretch Offset Plots}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_offset_center_stretch_020pct.png}
+    \caption{Center offset sequences for 20\% stretch – single-point test~1.}
+    \label{fig:offset-center-020}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_offset_nw_stretch_020pct.png}
+    \caption{Northwest (NW) offset sequences for 20\% stretch – single-point test~1.}
+    \label{fig:offset-nw-020}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_offset_ne_stretch_020pct.png}
+    \caption{Northeast (NE) offset sequences for 20\% stretch – single-point test~1.}
+    \label{fig:offset-ne-020}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_offset_sw_stretch_020pct.png}
+    \caption{Southwest (SW) offset sequences for 20\% stretch – single-point test~1.}
+    \label{fig:offset-sw-020}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{data/Single_Point/force_0.0to3.0N_step0.1N_single_test1/stretch_020pct/raw_data_offset_se_stretch_020pct.png}
+    \caption{Southeast (SE) offset sequences for 20\% stretch – single-point test~1.}
+    \label{fig:offset-se-020}
+\end{figure}
+
+\subsubsection{Model Performance Plots}
+The following plots show model performance on validation sequences, displaying measured vs. predicted forces:
 
 \begin{figure}[H]
     \centering
@@ -641,7 +823,7 @@ python3 src/training/train_single_point_models.py \
     --data-dir data/Single_Point/force_0.0to3.0N_step0.1N_single_test1 \
     --use-gpu
 \end{verbatim}
-          trains all models with GPU acceleration, applies preprocessing (normalization, filtering, outlier removal),
+          trains all models with GPU acceleration, applies preprocessing (normalization, filtering, outlier removal with 2 outliers per offset independently),
           and saves models with their corresponding scalers for consistent inference.
 \end{description}
 
@@ -730,7 +912,7 @@ models, scalers, and a comprehensive JSON report. The conversion includes:
 \begin{itemize}[leftmargin=1.5em]
     \item Sequence downsampling to match physical data length (81 samples average)
     \item Sequence duplication to reach target count (150 per stretch)
-    \item Outlier removal using MAD (Z-score threshold 3.0)
+    \item Outlier removal using MAD (Z-score threshold 3.0, 2 outliers per offset independently)
     \item Dataset balancing across stretch levels
     \item Offset mapping based on relative positions to center
 \end{itemize}
@@ -809,33 +991,6 @@ simulated recordings (test2 dataset). The simulation data uses the same preproce
     \vspace{0.1cm}
     \footnotesize
     \textit{Note: Press counts represent the test set size after a 70/30 train/test split by sequence. Offset mapping uses relative positions to center, enabling correct classification across different stretch levels despite varying absolute coordinates.}
-\end{table}
-
-\subsubsection{Where to find the artefacts}
-The training command above outputs all joblib models inside
-\texttt{data/Imported/simulation\_points\_test1/models/}, while the accompanying JSON metrics are saved as
-\texttt{simulation\_points\_test1\_metrics.json} in the same folder. These files mirror the structure used
-for the on-robot runs so that evaluation utilities and GUIs can load them without special cases.
-
-\section*{Acknowledgements}
-We thank the MagTec team for sensor fabrication, data collection, and feedback on the
-analysis pipeline.
-
-\end{document}
-
-             overlapping stretched poses.}
-    \label{tab:sim-offset}
-    \begin{tabular}{@{}lcc@{}}
-        \toprule
-        Model & Samples & Accuracy \\
-        \midrule
-        stretch\_000pct position classifier & 594 & 1.000 \\
-        stretch\_010pct position classifier & 594 & 1.000 \\
-        stretch\_020pct position classifier & 594 & 1.000 \\
-        pooled position classifier & 1782 & 0.996 \\
-        pooled stretch classifier & 1782 & 1.000 \\
-        \bottomrule
-    \end{tabular}
 \end{table}
 
 \subsubsection{Where to find the artefacts}
