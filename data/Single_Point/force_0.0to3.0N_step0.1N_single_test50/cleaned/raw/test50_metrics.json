@@ -1,0 +1,87 @@
+{
+  "force_mapping_per_stretch_full": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 20615,
+      "sequences": 44,
+      "rmse": 0.08881699025464788,
+      "std_dev": 0.08881566689026929,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 2.99
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 25428,
+      "sequences": 44,
+      "rmse": 0.08072811792929128,
+      "std_dev": 0.08050758155709921,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 2.99
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 24519,
+      "sequences": 44,
+      "rmse": 0.07387705194729687,
+      "std_dev": 0.07342676469263434,
+      "force_resolution_est": 0.009999999999999787,
+      "kpm1_pass": true,
+      "kpm2_pass": false,
+      "fz_min_actual": 0.0,
+      "fz_max_actual": 2.99
+    }
+  ],
+  "force_mapping_combined_full": {
+    "stretch_label": "combined",
+    "samples": 70562,
+    "sequences": 131,
+    "rmse": 0.0773351206255032,
+    "std_dev": 0.07724796184417133
+  },
+  "offset_classification_per_stretch_full": [
+    {
+      "stretch_label": "stretch_000pct",
+      "samples": 20615,
+      "sequences": 44,
+      "accuracy": 0.9914529914529915
+    },
+    {
+      "stretch_label": "stretch_010pct",
+      "samples": 25428,
+      "sequences": 44,
+      "accuracy": 1.0
+    },
+    {
+      "stretch_label": "stretch_020pct",
+      "samples": 24519,
+      "sequences": 44,
+      "accuracy": 1.0
+    }
+  ],
+  "offset_classification_combined_full": {
+    "stretch_label": "combined",
+    "samples": 70562,
+    "sequences": 131,
+    "accuracy": 0.9937687406296851
+  },
+  "stretch_classification_combined_full": {
+    "stretch_label": "combined",
+    "samples": 70562,
+    "sequences": 131,
+    "accuracy": 0.9989224137931034
+  },
+  "config": {
+    "data_type": "real",
+    "run_label": "test50",
+    "feature_method": "raw",
+    "use_advanced_features": false,
+    "outliers_removed": true,
+    "z_threshold": 3.0
+  }
+}

@@ -50,6 +50,25 @@ if str(SRC_ROOT) not in sys.path:
 
 from franka_controller.config import MODELS_DIR, LOGS_DIR
 
+# =============================================================================
+# FT SENSOR PRECISION CONFIGURATION
+# =============================================================================
+# FT sensor precision in Newtons (standard deviation or resolution)
+# This value determines:
+# - Rounding precision for force values during training (decimals = -log10(FT_SENSOR_PRECISION))
+# - Force resolution calculation (ΔF_min) precision
+# - KPM evaluation precision
+# 
+# Change this value to adjust sensor precision throughout the training pipeline
+# Examples:
+#   FT_SENSOR_PRECISION = 0.01  # 0.01N precision (2 decimal places)
+#   FT_SENSOR_PRECISION = 0.1   # 0.1N precision (1 decimal place)
+#   FT_SENSOR_PRECISION = 0.05  # 0.05N precision (2 decimal places)
+FT_SENSOR_PRECISION = 0.01  # FT sensor precision: 0.01N (2 decimal places)
+
+# Calculate number of decimal places from precision
+FT_SENSOR_DECIMALS = int(-np.log10(FT_SENSOR_PRECISION)) if FT_SENSOR_PRECISION > 0 else 2
+
 
 def load_sequences_from_h5(h5_path: Path) -> List[Dict]:
     """Load all press sequences from an HDF5 file."""
@@ -199,53 +218,56 @@ def remove_outliers(sequences: List[Dict], z_threshold: float = 3.0, remove_per_
         # Identify outliers for this offset
         outlier_indices_local = identify_outliers(offset_seq_list, z_threshold)
         
-        # Convert local indices to global indices
-        global_indices = [offset_sequences[i][0] for i in outlier_indices_local]
+        # Calculate outlier scores for ALL sequences to find the most extreme ones
+        # This ensures we can always remove remove_per_offset sequences, even if identify_outliers finds fewer
+        offset_seq_list_with_scores = []
+        fz_values = [s.get('max_fz', 0) for s in offset_seq_list]
+        duration_values = [s.get('duration', 0) for s in offset_seq_list]
+        num_samples_values = [s.get('num_samples', 0) for s in offset_seq_list]
         
-        # Remove up to remove_per_offset outliers (take the most extreme ones)
-        if len(global_indices) > 0:
-            # Calculate outlier scores to find the most extreme ones
-            offset_seq_list_with_scores = []
-            for local_idx, (global_idx, seq) in enumerate(offset_sequences):
-                if local_idx in outlier_indices_local:
-                    # Calculate a combined outlier score
-                    fz = seq.get('max_fz', 0)
-                    duration = seq.get('duration', 0)
-                    num_samples = seq.get('num_samples', 0)
-                    
-                    # Use MAD-based scores
-                    fz_values = [s.get('max_fz', 0) for s in offset_seq_list]
-                    duration_values = [s.get('duration', 0) for s in offset_seq_list]
-                    num_samples_values = [s.get('num_samples', 0) for s in offset_seq_list]
-                    
-                    fz_median = np.median(fz_values)
-                    fz_mad = np.median(np.abs(np.array(fz_values) - fz_median))
-                    duration_median = np.median(duration_values)
-                    duration_mad = np.median(np.abs(np.array(duration_values) - duration_median))
-                    num_samples_median = np.median(num_samples_values)
-                    num_samples_mad = np.median(np.abs(np.array(num_samples_values) - num_samples_median))
-                    
-                    score = 0
-                    if fz_mad > 0:
-                        score += abs((fz - fz_median) / fz_mad)
-                    if duration_mad > 0:
-                        # Give duration higher weight to catch sequences significantly longer/shorter than median
-                        duration_score = abs((duration - duration_median) / duration_mad)
-                        # Extra penalty for sequences much longer than median (e.g., 2x median or more)
-                        if duration > duration_median * 2.0:
-                            duration_score *= 2.0
-                        score += duration_score * 1.5  # 1.5x weight for duration
-                    if num_samples_mad > 0:
-                        score += abs((num_samples - num_samples_median) / num_samples_mad)
-                    
-                    offset_seq_list_with_scores.append((global_idx, score))
+        fz_median = np.median(fz_values)
+        fz_mad = np.median(np.abs(np.array(fz_values) - fz_median)) if len(fz_values) > 0 else 1.0
+        duration_median = np.median(duration_values)
+        duration_mad = np.median(np.abs(np.array(duration_values) - duration_median)) if len(duration_values) > 0 else 1.0
+        num_samples_median = np.median(num_samples_values)
+        num_samples_mad = np.median(np.abs(np.array(num_samples_values) - num_samples_median)) if len(num_samples_values) > 0 else 1.0
+        
+        for local_idx, (global_idx, seq) in enumerate(offset_sequences):
+            # Calculate a combined outlier score
+            fz = seq.get('max_fz', 0)
+            duration = seq.get('duration', 0)
+            num_samples = seq.get('num_samples', 0)
             
-            # Sort by score (highest = most extreme) and take top remove_per_offset
-            offset_seq_list_with_scores.sort(key=lambda x: x[1], reverse=True)
-            outliers_to_remove = [idx for idx, _ in offset_seq_list_with_scores[:remove_per_offset]]
+            score = 0
+            if fz_mad > 0:
+                score += abs((fz - fz_median) / fz_mad)
+            if duration_mad > 0:
+                # Give duration higher weight to catch sequences significantly longer/shorter than median
+                duration_score = abs((duration - duration_median) / duration_mad)
+                # Extra penalty for sequences much longer than median (e.g., 2x median or more)
+                if duration > duration_median * 2.0:
+                    duration_score *= 2.0
+                score += duration_score * 1.5  # 1.5x weight for duration
+            if num_samples_mad > 0:
+                score += abs((num_samples - num_samples_median) / num_samples_mad)
             
-            all_outlier_indices.update(outliers_to_remove)
-            print(f"  Offset {offset}: Removing {len(outliers_to_remove)} outliers (indices: {sorted(outliers_to_remove)})")
+            # Prioritize sequences identified as outliers by identify_outliers
+            is_identified_outlier = local_idx in outlier_indices_local
+            if is_identified_outlier:
+                score *= 2.0  # Double the score for identified outliers
+            
+            offset_seq_list_with_scores.append((global_idx, score, is_identified_outlier))
+        
+        # Sort by score (highest = most extreme) and take top remove_per_offset
+        # First prioritize identified outliers, then by score
+        offset_seq_list_with_scores.sort(key=lambda x: (x[2], x[1]), reverse=True)  # First by outlier flag, then by score
+        
+        # ALWAYS remove exactly remove_per_offset sequences (or as many as available if fewer)
+        num_to_remove = min(remove_per_offset, len(offset_seq_list_with_scores))
+        outliers_to_remove = [idx for idx, _, _ in offset_seq_list_with_scores[:num_to_remove]]
+        
+        all_outlier_indices.update(outliers_to_remove)
+        print(f"  Offset {offset}: Removing {len(outliers_to_remove)} outliers (indices: {sorted(outliers_to_remove)})")
     
     if all_outlier_indices:
         print(f"  Total outliers removed: {len(all_outlier_indices)} (indices: {sorted(all_outlier_indices)})")
@@ -342,7 +364,8 @@ def normalize_fz_to_range(fz: np.ndarray, target_min: float = 0.0, target_max: f
 
 def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_feature_engineering: bool = False, 
                           filter_displacement: bool = True, displacement_threshold: float = 95.0,
-                          normalize_fz: bool = True, fz_target_min: float = 0.0, fz_target_max: float = 3.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[object], Optional[object]]:
+                          normalize_fz: bool = True, fz_target_min: float = 0.0, fz_target_max: float = 3.0,
+                          include_offset_labels: bool = False, use_advanced_features: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[object], Optional[object]]:
     """Prepare features (magnetic), targets (Fz), and offsets from sequences.
     
     Args:
@@ -354,9 +377,11 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
         normalize_fz: Whether to normalize Fz to target range [fz_target_min, fz_target_max]
         fz_target_min: Target minimum for Fz normalization (default 0.0)
         fz_target_max: Target maximum for Fz normalization (default 3.0)
+        include_offset_labels: Whether to add offset labels as one-hot encoded features
+        use_advanced_features: Whether to add advanced features (statistical + temporal features)
     
     Returns:
-        X: Features [samples, N] where N=45 (raw) if use_feature_engineering=False, or N=15 (normalized per sensor) if True
+        X: Features [samples, N] where N depends on feature method and advanced features
         y_fz: Fz values (normalized to [fz_target_min, fz_target_max] if normalize_fz=True)
         y_offset: Offset labels (integers: 0=center, 1=ne, 2=nw, 3=se, 4=sw, -1=unknown)
         scaler: Fitted StandardScaler (if normalize=True) or None
@@ -470,6 +495,69 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
         offset_map = {'center': 0, 'ne': 1, 'nw': 2, 'se': 3, 'sw': 4, 'unknown': -1}
         offset = offset_map.get(seq['offset'], -1)
         
+        # Add advanced features if requested
+        if use_advanced_features:
+            # Features statistiche: per ogni sensore, calcola media, std, max, min delle 3 componenti
+            # Shape: [samples, 15, 3] -> [samples, 60] (15 sensori × 4 statistiche)
+            statistical_features = []
+            for sensor_idx in range(15):
+                sensor_xyz = magnetic[:, sensor_idx, :]  # [samples, 3]
+                
+                # Calcola statistiche locali per ogni sample (media, std, max, min delle 3 componenti)
+                sensor_mean = np.mean(sensor_xyz, axis=1)  # [samples] - media delle 3 componenti per sample
+                sensor_std = np.std(sensor_xyz, axis=1)  # [samples] - std delle 3 componenti per sample
+                sensor_max = np.max(sensor_xyz, axis=1)  # [samples] - max delle 3 componenti per sample
+                sensor_min = np.min(sensor_xyz, axis=1)  # [samples] - min delle 3 componenti per sample
+                
+                # Aggiungi anche statistiche globali della sequenza (ripetute per ogni sample)
+                seq_mean = np.mean(sensor_xyz)  # Scalar
+                seq_std = np.std(sensor_xyz)  # Scalar
+                seq_max = np.max(sensor_xyz)  # Scalar
+                seq_min = np.min(sensor_xyz)  # Scalar
+                
+                # Usa statistiche locali (più informative) + statistiche globali = 8 features per sensore
+                # Ma per mantenere il numero ragionevole, usiamo solo le statistiche locali
+                # Questo dà 4 features per sensore × 15 sensori = 60 features
+                statistical_features.append(np.column_stack([
+                    sensor_mean,  # Media locale per sample
+                    sensor_std,   # Std locale per sample
+                    sensor_max,   # Max locale per sample
+                    sensor_min    # Min locale per sample
+                ]))
+            
+            # Concatena tutte le features statistiche: [samples, 60]
+            statistical_features = np.hstack(statistical_features)  # [samples, 60]
+            
+            # Features temporali: derivate prima e seconda per ogni componente
+            # Shape: [samples, 15, 3] -> [samples, 90] (45 componenti × 2 derivate)
+            
+            # Flatten magnetic data per calcolare derivate: [samples, 45]
+            magnetic_flat = magnetic.reshape(magnetic.shape[0], -1)  # [samples, 45]
+            
+            # Derivata prima (velocità di cambiamento)
+            if len(magnetic_flat) > 1:
+                # Calcola differenza tra campioni consecutivi
+                diff_1 = np.diff(magnetic_flat, axis=0)  # [samples-1, 45]
+                # Per il primo sample, usa la differenza con il secondo (ripeti il primo valore)
+                derivative_1 = np.vstack([diff_1[0:1], diff_1])  # [samples, 45]
+            else:
+                derivative_1 = np.zeros_like(magnetic_flat)
+            
+            # Derivata seconda (accelerazione)
+            if len(derivative_1) > 1:
+                # Calcola la derivata seconda come differenza della derivata prima
+                diff_2 = np.diff(derivative_1, axis=0)  # [samples-1, 45]
+                # Per il primo sample, usa la differenza con il secondo
+                derivative_2 = np.vstack([diff_2[0:1], diff_2])  # [samples, 45]
+            else:
+                derivative_2 = np.zeros_like(magnetic_flat)
+            
+            # Concatena derivate: [samples, 90]
+            temporal_features = np.hstack([derivative_1, derivative_2])  # [samples, 90]
+            
+            # Combina features base + statistiche + temporali
+            features = np.hstack([features, statistical_features, temporal_features])
+        
         all_features.append(features)
         all_fz.append(fz_raw)  # Store raw values first
         all_offsets.append(np.full(len(fz_raw), offset))
@@ -479,12 +567,41 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
     y_fz_raw = np.concatenate(all_fz)
     y_offset = np.concatenate(all_offsets)
     
+    # Add offset labels as features if requested (one-hot encoding)
+    # Note: This is done AFTER advanced features are added, so offset labels are always at the end
+    if include_offset_labels:
+        from sklearn.preprocessing import OneHotEncoder
+        # Create one-hot encoding for offset labels (5 classes: center, ne, nw, se, sw)
+        # Filter out unknown offsets (-1) for encoding
+        valid_mask = y_offset >= 0
+        offset_encoder = OneHotEncoder(sparse_output=False, categories=[np.arange(5)], handle_unknown='ignore')
+        # Fit on valid offsets only
+        offset_onehot = np.zeros((len(y_offset), 5))
+        if np.sum(valid_mask) > 0:
+            offset_onehot[valid_mask] = offset_encoder.fit_transform(y_offset[valid_mask].reshape(-1, 1))
+        # Concatenate magnetic features with offset one-hot encoding
+        X = np.hstack([X, offset_onehot])
+        print(f"  Added offset labels as one-hot features: {X.shape[1] - (X.shape[1] - 5)} additional features")
+    
+    # Print feature summary
+    if use_advanced_features:
+        base_features = 45 if not use_feature_engineering else 15
+        if include_offset_labels:
+            base_features += 5
+        statistical_features = 60  # 15 sensori × 4 statistiche
+        temporal_features = 90    # 45 componenti × 2 derivate
+        print(f"  Feature breakdown: {base_features} base + {statistical_features} statistical + {temporal_features} temporal = {X.shape[1]} total features")
+    
+    # Round force values to match FT sensor precision to remove artificial precision
+    # Values beyond the sensor precision are artifacts
+    y_fz_raw = np.round(y_fz_raw, decimals=FT_SENSOR_DECIMALS)
+    
     # Don't normalize Fz - keep original values (but sequences are cut at 3N)
     fz_scaler = None
     y_fz = y_fz_raw
     fz_min = np.min(y_fz_raw)
     fz_max = np.max(y_fz_raw)
-    print(f"  Fz range: [{fz_min:.3f}, {fz_max:.3f}] N (not normalized, sequences cut at 3N)")
+    print(f"  Fz range: [{fz_min:.3f}, {fz_max:.3f}] N (not normalized, sequences cut at 3N, rounded to {FT_SENSOR_PRECISION}N precision)")
     
     # Normalize features
     scaler = None
@@ -575,6 +692,7 @@ def train_models_for_stretch(
     fz_target_min: float = 0.0,
     fz_target_max: float = 3.0,
     feature_method: str = 'raw',
+    use_advanced_features: bool = False,
 ) -> Dict:
     """Train force regressor and offset classifier for a specific stretch level."""
     print(f"\n{'='*80}")
@@ -591,10 +709,19 @@ def train_models_for_stretch(
         displacement_threshold=95.0,
         normalize_fz=False,  # Don't normalize, just cut at 3N
         fz_target_min=fz_target_min,
-        fz_target_max=fz_target_max
+        fz_target_max=fz_target_max,
+        include_offset_labels=(feature_method == 'raw_labelled'),  # Add offset labels as features for raw_labelled
+        use_advanced_features=use_advanced_features  # Add advanced features (statistical + temporal)
     )
     print(f"Total samples: {len(X)}")
-    print(f"Features: {X.shape[1]} ({'15 normalized per sensor' if X.shape[1] == 15 else 'raw features' if X.shape[1] == 45 else str(X.shape[1]) + ' features'})")
+    if X.shape[1] == 15:
+        print(f"Features: {X.shape[1]} (15 normalized per sensor)")
+    elif X.shape[1] == 45:
+        print(f"Features: {X.shape[1]} (45 raw features)")
+    elif X.shape[1] == 50:
+        print(f"Features: {X.shape[1]} (45 raw features + 5 offset one-hot labels)")
+    else:
+        print(f"Features: {X.shape[1]} features")
     print(f"Fz range: [{np.min(y_fz):.3f}, {np.max(y_fz):.3f}] N (normalized to [{fz_target_min:.1f}, {fz_target_max:.1f}])")
     print(f"Offsets: {np.unique(y_offset)}")
     print(f"Features normalized: mean={np.mean(X):.2f}, std={np.std(X):.2f}")
@@ -702,7 +829,8 @@ def train_models_for_stretch(
     fz_test_max = float(np.max(y_fz_test))
     
     # Calculate force resolution (KPM1) from test data
-    unique_forces = np.unique(np.round(y_fz_test, decimals=3))
+    # Round to match FT sensor precision to get realistic estimate, not an artifact of rounding
+    unique_forces = np.unique(np.round(y_fz_test, decimals=FT_SENSOR_DECIMALS))
     if len(unique_forces) > 1:
         deltas = np.diff(unique_forces)
         force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
@@ -711,10 +839,14 @@ def train_models_for_stretch(
     
     sensitivity_target = 0.05  # KPM1 threshold
     kpm1_pass = force_resolution <= sensitivity_target if not np.isnan(force_resolution) else None
-    kpm2_pass = (rmse < 0.10) and (std_dev < 0.05)
     
-    print(f"  RMSE: {rmse:.4f} N")
-    print(f"  Std Dev: {std_dev:.4f} N")
+    # Round RMSE and STD to 2 decimal places for KPM2 check
+    rmse_rounded = round(rmse, 2)
+    std_dev_rounded = round(std_dev, 2)
+    kpm2_pass = (rmse_rounded < 0.10) and (std_dev_rounded < 0.05)
+    
+    print(f"  RMSE: {rmse_rounded:.2f} N")
+    print(f"  Std Dev: {std_dev_rounded:.2f} N")
     if not np.isnan(force_resolution):
         print(f"  Force resolution (ΔF_min): {force_resolution:.6f} N")
         print(f"  KPM1: {'PASS' if kpm1_pass else 'FAIL'}")
@@ -802,6 +934,7 @@ def train_combined_model(
     fz_target_min: float = 0.0,
     fz_target_max: float = 3.0,
     feature_method: str = 'raw',
+    use_advanced_features: bool = False,
 ) -> Dict:
     """Train a combined model using all stretch levels."""
     print(f"\n{'='*80}")
@@ -827,7 +960,9 @@ def train_combined_model(
         displacement_threshold=95.0,
         normalize_fz=False,  # Don't normalize, just cut at 3N
         fz_target_min=fz_target_min,
-        fz_target_max=fz_target_max
+        fz_target_max=fz_target_max,
+        include_offset_labels=(feature_method == 'raw_labelled'),  # Add offset labels as features for raw_labelled
+        use_advanced_features=use_advanced_features  # Add advanced features (statistical + temporal)
     )
     
     # Encode stretch labels as integers
@@ -848,7 +983,14 @@ def train_combined_model(
             y_stretch_expanded = np.concatenate([y_stretch_expanded, np.full(len(y_fz) - len(y_stretch_expanded), y_stretch_expanded[-1] if len(y_stretch_expanded) > 0 else 0)])
     
     print(f"Total samples: {len(X)}")
-    print(f"Features: {X.shape[1]} ({'15 normalized per sensor' if X.shape[1] == 15 else 'raw features' if X.shape[1] == 45 else str(X.shape[1]) + ' features'})")
+    if X.shape[1] == 15:
+        print(f"Features: {X.shape[1]} (15 normalized per sensor)")
+    elif X.shape[1] == 45:
+        print(f"Features: {X.shape[1]} (45 raw features)")
+    elif X.shape[1] == 50:
+        print(f"Features: {X.shape[1]} (45 raw features + 5 offset one-hot labels)")
+    else:
+        print(f"Features: {X.shape[1]} features")
     print(f"Fz range: [{np.min(y_fz):.3f}, {np.max(y_fz):.3f}] N (normalized to [0, 3])")
     print(f"Stretch levels: {list(stretch_map.keys())}")
     print(f"Features normalized: mean={np.mean(X):.2f}, std={np.std(X):.2f}")
@@ -960,7 +1102,8 @@ def train_combined_model(
     fz_test_max = float(np.max(y_fz_test))
     
     # Calculate force resolution (KPM1) from test data
-    unique_forces = np.unique(np.round(y_fz_test, decimals=3))
+    # Round to match FT sensor precision to get realistic estimate, not an artifact of rounding
+    unique_forces = np.unique(np.round(y_fz_test, decimals=FT_SENSOR_DECIMALS))
     if len(unique_forces) > 1:
         deltas = np.diff(unique_forces)
         force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
@@ -969,10 +1112,14 @@ def train_combined_model(
     
     sensitivity_target = 0.05  # KPM1 threshold
     kpm1_pass = force_resolution <= sensitivity_target if not np.isnan(force_resolution) else None
-    kpm2_pass = (rmse < 0.10) and (std_dev < 0.05)
     
-    print(f"  RMSE: {rmse:.4f} N")
-    print(f"  Std Dev: {std_dev:.4f} N")
+    # Round RMSE and STD to 2 decimal places for KPM2 check
+    rmse_rounded = round(rmse, 2)
+    std_dev_rounded = round(std_dev, 2)
+    kpm2_pass = (rmse_rounded < 0.10) and (std_dev_rounded < 0.05)
+    
+    print(f"  RMSE: {rmse_rounded:.2f} N")
+    print(f"  Std Dev: {std_dev_rounded:.2f} N")
     if not np.isnan(force_resolution):
         print(f"  Force resolution (ΔF_min): {force_resolution:.6f} N")
         print(f"  KPM1: {'PASS' if kpm1_pass else 'FAIL'}")
@@ -1114,9 +1261,9 @@ def main():
     parser.add_argument(
         '--feature-method',
         type=str,
-        choices=['raw', 'normalized'],
+        choices=['raw', 'normalized', 'raw_labelled'],
         default='raw',
-        help='Feature extraction method: "raw" = 45 raw features (flattened), "normalized" = 15 normalized features (one per sensor) (default: raw)'
+        help='Feature extraction method: "raw" = 45 raw features (flattened), "normalized" = 15 normalized features (one per sensor), "raw_labelled" = 50 features (45 raw + 5 offset one-hot) (default: raw)'
     )
     parser.add_argument(
         '--no-gpu',
@@ -1130,18 +1277,46 @@ def main():
         default=None,
         help='Path to save JSON metrics report (default: auto-generated)'
     )
+    parser.add_argument(
+        '--use-advanced-features',
+        action='store_true',
+        default=False,
+        help='Enable advanced feature engineering: adds 60 statistical features (mean, std, max, min per sensor) + 90 temporal features (first and second derivatives) to base features. Total: base + 150 features. (default: False)'
+    )
     
     args = parser.parse_args()
     
     data_dir = Path(args.data_dir)
-    models_dir = Path(args.models_dir)
+    
+    # If data_dir is inside a "cleaned" directory, save models and plots in feature_method subfolder
+    if "cleaned" in str(data_dir):
+        # Extract the cleaned directory path
+        if data_dir.name == "cleaned":
+            cleaned_dir = data_dir
+        elif (data_dir.parent / "cleaned").exists():
+            cleaned_dir = data_dir.parent / "cleaned"
+        else:
+            cleaned_dir = data_dir
+        # Create subdirectories: cleaned/{feature_method}/models and cleaned/{feature_method}/plots
+        feature_dir = cleaned_dir / args.feature_method
+        models_dir = feature_dir / "models"
+        plots_dir = feature_dir / "plots"
+    else:
+        # Use default models directory
+        models_dir = Path(args.models_dir)
+        # Create subdirectory for plots based on feature method
+        plots_dir = data_dir / "plots" / args.feature_method
+    
     models_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
     
     print("="*80)
     print("SINGLE-POINT MODEL TRAINING")
     print("="*80)
     print(f"Data directory: {data_dir}")
     print(f"Models directory: {models_dir}")
+    print(f"Plots directory: {plots_dir}")
+    print(f"Feature method: {args.feature_method}")
     print(f"Outlier Z-threshold: {args.z_threshold}")
     print(f"GPU acceleration: {args.use_gpu}")
     if args.use_gpu:
@@ -1155,13 +1330,30 @@ def main():
     
     # Find HDF5 files for each stretch level
     h5_files = {}
+    
+    # Check if we're in a cleaned directory structure (with data/ subdirectory)
+    data_subdir = data_dir / "data"
+    if data_subdir.exists():
+        search_dir = data_subdir
+    else:
+        search_dir = data_dir
+    
     for stretch in ['000pct', '010pct', '020pct']:
-        # Try to find file in data_dir
-        pattern = f"*stretch_{stretch}.h5"
-        files = list(data_dir.glob(pattern))
+        # Try to find file with new naming: test_XX_YYY_cleaned.h5
+        # Extract stretch number: 000pct -> 000
+        stretch_num = stretch.replace('pct', '')
+        pattern_new = f"test_*_{stretch_num}_cleaned.h5"
+        files = list(search_dir.glob(pattern_new))
+        
+        # Also try old naming patterns
+        if not files:
+            pattern1 = f"*stretch_{stretch}.h5"
+            pattern2 = f"*stretch_{stretch}_cleaned.h5"
+            files = list(search_dir.glob(pattern1)) + list(search_dir.glob(pattern2))
+        
         if not files:
             # Try in subdirectory
-            stretch_dir = data_dir / f"stretch_{stretch}"
+            stretch_dir = search_dir / f"stretch_{stretch}"
             if stretch_dir.exists():
                 files = list(stretch_dir.glob("*.h5"))
         
@@ -1187,52 +1379,67 @@ def main():
         print(f"  Loaded {len(sequences)} sequences")
         
         if sequences:
-            # Count sequences per offset before any removal
-            initial_offset_counts = {}
-            for seq in sequences:
-                offset = seq.get('offset', 'unknown')
-                initial_offset_counts[offset] = initial_offset_counts.get(offset, 0) + 1
-            print(f"  Initial sequences per offset: {initial_offset_counts}")
-            print(f"  Total initial sequences: {len(sequences)} (expected: 33*5 = 165)")
+            # Check if this file is already cleaned (has _cleaned.h5 suffix or is in cleaned/ directory)
+            file_is_cleaned = "_cleaned.h5" in h5_file.name or "cleaned" in str(h5_file.parent)
             
-            # Remove first sequence per offset (warm-up/calibration sequence) BEFORE outlier removal
-            print(f"  Removing first sequence per offset...")
-            sequences_by_offset = {}
-            for idx, seq in enumerate(sequences):
-                offset = seq.get('offset', 'unknown')
-                if offset not in sequences_by_offset:
-                    sequences_by_offset[offset] = []
-                sequences_by_offset[offset].append((idx, seq))
-            
-            first_sequence_indices = set()
-            for offset, offset_sequences in sequences_by_offset.items():
-                if len(offset_sequences) > 1:  # Only remove if there's more than one sequence
-                    # Get the first sequence index (assuming sequences are in order)
-                    first_idx = offset_sequences[0][0]
-                    first_sequence_indices.add(first_idx)
-                    print(f"    Offset {offset}: Removing first sequence (index: {first_idx})")
-            
-            if first_sequence_indices:
-                sequences_after_first_removal = [s for i, s in enumerate(sequences) if i not in first_sequence_indices]
-                print(f"  After removing first sequences: {len(sequences_after_first_removal)} sequences (removed {len(first_sequence_indices)} first sequences)")
-                print(f"  Expected after first removal: {len(sequences)} - {len(first_sequence_indices)} = {len(sequences) - len(first_sequence_indices)}")
+            if file_is_cleaned:
+                print(f"  ✓ File is already cleaned (detected _cleaned.h5 suffix or cleaned/ directory)")
+                print(f"  ✓ Using sequences as-is (no additional cleaning)")
+                # Count sequences per offset for info
+                offset_counts = {}
+                for seq in sequences:
+                    offset = seq.get('offset', 'unknown')
+                    offset_counts[offset] = offset_counts.get(offset, 0) + 1
+                print(f"  Sequences per offset: {offset_counts}")
+                sequences_by_stretch[stretch] = sequences
             else:
-                sequences_after_first_removal = sequences
-            
-            # Remove outliers (2 per offset, independently) from remaining sequences
-            print(f"  Removing outliers (2 per offset, independently)...")
-            print(f"  Expected after outlier removal: {len(sequences_after_first_removal)} - (5 offsets * 2 outliers) = {len(sequences_after_first_removal) - 10} sequences")
-            cleaned_sequences, outlier_indices = remove_outliers(sequences_after_first_removal, args.z_threshold, remove_per_offset=2)
-            print(f"  After outlier removal: {len(cleaned_sequences)} sequences (removed {len(outlier_indices)} outliers)")
-            
-            # Count sequences per offset to verify
-            offset_counts = {}
-            for seq in cleaned_sequences:
-                offset = seq.get('offset', 'unknown')
-                offset_counts[offset] = offset_counts.get(offset, 0) + 1
-            print(f"  Sequences per offset after cleaning: {offset_counts}")
-            print(f"  Expected per offset: 33 - 1 (first) - 2 (outliers) = 30")
-            sequences_by_stretch[stretch] = cleaned_sequences
+                # File is NOT cleaned - apply cleaning steps
+                # Count sequences per offset before any removal
+                initial_offset_counts = {}
+                for seq in sequences:
+                    offset = seq.get('offset', 'unknown')
+                    initial_offset_counts[offset] = initial_offset_counts.get(offset, 0) + 1
+                print(f"  Initial sequences per offset: {initial_offset_counts}")
+                print(f"  Total initial sequences: {len(sequences)} (expected: 33*5 = 165)")
+                
+                # Remove first sequence per offset (warm-up/calibration sequence) BEFORE outlier removal
+                print(f"  Removing first sequence per offset...")
+                sequences_by_offset = {}
+                for idx, seq in enumerate(sequences):
+                    offset = seq.get('offset', 'unknown')
+                    if offset not in sequences_by_offset:
+                        sequences_by_offset[offset] = []
+                    sequences_by_offset[offset].append((idx, seq))
+                
+                first_sequence_indices = set()
+                for offset, offset_sequences in sequences_by_offset.items():
+                    if len(offset_sequences) > 1:  # Only remove if there's more than one sequence
+                        # Get the first sequence index (assuming sequences are in order)
+                        first_idx = offset_sequences[0][0]
+                        first_sequence_indices.add(first_idx)
+                        print(f"    Offset {offset}: Removing first sequence (index: {first_idx})")
+                
+                if first_sequence_indices:
+                    sequences_after_first_removal = [s for i, s in enumerate(sequences) if i not in first_sequence_indices]
+                    print(f"  After removing first sequences: {len(sequences_after_first_removal)} sequences (removed {len(first_sequence_indices)} first sequences)")
+                    print(f"  Expected after first removal: {len(sequences)} - {len(first_sequence_indices)} = {len(sequences) - len(first_sequence_indices)}")
+                else:
+                    sequences_after_first_removal = sequences
+                
+                # Remove outliers (2 per offset, independently) from remaining sequences
+                print(f"  Removing outliers (2 per offset, independently)...")
+                print(f"  Expected after outlier removal: {len(sequences_after_first_removal)} - (5 offsets * 2 outliers) = {len(sequences_after_first_removal) - 10} sequences")
+                cleaned_sequences, outlier_indices = remove_outliers(sequences_after_first_removal, args.z_threshold, remove_per_offset=2)
+                print(f"  After outlier removal: {len(cleaned_sequences)} sequences (removed {len(outlier_indices)} outliers)")
+                
+                # Count sequences per offset to verify
+                offset_counts = {}
+                for seq in cleaned_sequences:
+                    offset = seq.get('offset', 'unknown')
+                    offset_counts[offset] = offset_counts.get(offset, 0) + 1
+                print(f"  Sequences per offset after cleaning: {offset_counts}")
+                print(f"  Expected per offset: 33 - 1 (first) - 2 (outliers) = 30")
+                sequences_by_stretch[stretch] = cleaned_sequences
     
     if not sequences_by_stretch:
         print("\n❌ No sequences loaded!")
@@ -1256,7 +1463,7 @@ def main():
     for stretch_label, sequences in sequences_by_stretch.items():
         # Use different GPU for each stretch level to parallelize training
         gpu_id = gpu_mapping.get(stretch_label, 0)
-        result = train_models_for_stretch(sequences, stretch_label, train_ratio=0.7, use_gpu=args.use_gpu, gpu_id=gpu_id, feature_method=args.feature_method)
+        result = train_models_for_stretch(sequences, stretch_label, train_ratio=0.7, use_gpu=args.use_gpu, gpu_id=gpu_id, feature_method=args.feature_method, use_advanced_features=args.use_advanced_features)
         trained_models[stretch_label] = result
         
     
@@ -1264,7 +1471,7 @@ def main():
     print("\n" + "="*80)
     print("TRAINING COMBINED MODEL")
     print("="*80)
-    combined_result = train_combined_model(sequences_by_stretch, train_ratio=0.7, use_gpu=args.use_gpu, feature_method=args.feature_method)
+    combined_result = train_combined_model(sequences_by_stretch, train_ratio=0.7, use_gpu=args.use_gpu, feature_method=args.feature_method, use_advanced_features=args.use_advanced_features)
     trained_models['combined'] = combined_result
     
     # Save models
@@ -1303,9 +1510,7 @@ def main():
     print("GENERATING PLOTS")
     print("="*80)
     
-    # Create plots directory
-    plots_dir = data_dir / "plots"
-    plots_dir.mkdir(parents=True, exist_ok=True)
+    # plots_dir already created above
     
     # Plot confusion matrices
     import matplotlib.pyplot as plt
@@ -1317,12 +1522,20 @@ def main():
     for model_name, result in trained_models.items():
         if 'offset_confusion_matrix' in result and result['offset_confusion_matrix'] is not None:
             cm = result['offset_confusion_matrix']
+            # Normalize by row (each row sums to 1.0) to show percentages
+            # This makes it easy to see per-class accuracy: diagonal values = accuracy for that class
+            cm_normalized = cm.astype(float)
+            row_sums = cm_normalized.sum(axis=1, keepdims=True)
+            # Avoid division by zero
+            row_sums[row_sums == 0] = 1.0
+            cm_normalized = cm_normalized / row_sums
+            
             fig, ax = plt.subplots(figsize=(8, 7))
-            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=offset_names)
-            disp.plot(ax=ax, cmap='Blues', values_format='d')
-            ax.set_title(f'Offset Classification Confusion Matrix - {model_name}', fontsize=14, fontweight='bold')
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm_normalized, display_labels=offset_names)
+            disp.plot(ax=ax, cmap='Blues', values_format='.2f')
+            ax.set_title(f'Offset Classification Confusion Matrix - {model_name}\n(Normalized by row: values = percentage)', fontsize=14, fontweight='bold')
             plt.tight_layout()
-            confusion_plot_path = plots_dir / f"confusion_matrix_offset_{model_name}.png"
+            confusion_plot_path = plots_dir / f"confusion_matrix_offset_{model_name}_{args.feature_method}.png"
             plt.savefig(confusion_plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             print(f"  ✓ Saved confusion matrix plot: {confusion_plot_path}")
@@ -1330,13 +1543,21 @@ def main():
         
         if 'stretch_confusion_matrix' in result and result['stretch_confusion_matrix'] is not None:
             cm = result['stretch_confusion_matrix']
+            # Normalize by row (each row sums to 1.0) to show percentages
+            # This makes it easy to see per-class accuracy: diagonal values = accuracy for that class
+            cm_normalized = cm.astype(float)
+            row_sums = cm_normalized.sum(axis=1, keepdims=True)
+            # Avoid division by zero
+            row_sums[row_sums == 0] = 1.0
+            cm_normalized = cm_normalized / row_sums
+            
             stretch_labels = ['000pct', '010pct', '020pct']
             fig, ax = plt.subplots(figsize=(8, 7))
-            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=stretch_labels)
-            disp.plot(ax=ax, cmap='Blues', values_format='d')
-            ax.set_title(f'Stretch Classification Confusion Matrix - {model_name}', fontsize=14, fontweight='bold')
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm_normalized, display_labels=stretch_labels)
+            disp.plot(ax=ax, cmap='Blues', values_format='.2f')
+            ax.set_title(f'Stretch Classification Confusion Matrix - {model_name}\n(Normalized by row: values = percentage)', fontsize=14, fontweight='bold')
             plt.tight_layout()
-            confusion_plot_path = plots_dir / f"confusion_matrix_stretch_{model_name}.png"
+            confusion_plot_path = plots_dir / f"confusion_matrix_stretch_{model_name}_{args.feature_method}.png"
             plt.savefig(confusion_plot_path, dpi=150, bbox_inches='tight')
             plt.close()
             print(f"  ✓ Saved confusion matrix plot: {confusion_plot_path}")
@@ -1382,7 +1603,7 @@ def main():
                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=11)
                 
                 plt.tight_layout()
-                prediction_plot_path = plots_dir / f"prediction_scatter_{model_name}.png"
+                prediction_plot_path = plots_dir / f"prediction_scatter_{model_name}_{args.feature_method}.png"
                 plt.savefig(prediction_plot_path, dpi=150, bbox_inches='tight')
                 plt.close()
                 print(f"  ✓ Saved prediction scatter plot: {prediction_plot_path}")
@@ -1398,7 +1619,7 @@ def main():
                 ax.set_title(f'Residual Plot - {model_name}\nStd Dev: {result["force_std_dev"]:.4f} N', fontsize=14, fontweight='bold')
                 ax.grid(True, alpha=0.3)
                 plt.tight_layout()
-                residual_plot_path = plots_dir / f"prediction_residuals_{model_name}.png"
+                residual_plot_path = plots_dir / f"prediction_residuals_{model_name}_{args.feature_method}.png"
                 plt.savefig(residual_plot_path, dpi=150, bbox_inches='tight')
                 plt.close()
                 print(f"  ✓ Saved residual plot: {residual_plot_path}")
@@ -1554,13 +1775,25 @@ def main():
         combined_stretch_metrics = None
     
     # Save JSON report
-    reports_dir = Path(LOGS_DIR) / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    # If we're in a cleaned directory, save JSON in the feature_method subfolder
+    if "cleaned" in str(data_dir):
+        if data_dir.name == "cleaned":
+            cleaned_dir = data_dir
+        elif (data_dir.parent / "cleaned").exists():
+            cleaned_dir = data_dir.parent / "cleaned"
+        else:
+            cleaned_dir = data_dir
+        feature_dir = cleaned_dir / args.feature_method
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        reports_dir = feature_dir
+    else:
+        reports_dir = Path(LOGS_DIR) / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
     
     if args.report:
         report_path = Path(args.report)
     else:
-        report_path = reports_dir / f"{data_dir.name}_metrics.json"
+        report_path = reports_dir / f"{data_dir.name}_metrics_{args.feature_method}.json"
     
     report_payload = {
         'force_mapping_per_stretch_full': force_results_full,
@@ -1600,23 +1833,39 @@ def main():
     print(f"Metrics report saved to: {report_path}")
     
     # Print summary
-    print("\n" + "="*100)
+    print("\n" + "="*120)
     print("TRAINING SUMMARY")
-    print("="*100)
-    print(f"{'Model':<15} {'Sequences':<12} {'Train Seq':<12} {'Test Seq':<12} {'Samples':<12} {'Train Samples':<15} {'Test Samples':<15} {'RMSE':<10} {'Offset Acc':<12} {'Fz Range':<15}")
-    print("-"*100)
+    print("="*120)
+    print(f"{'Model':<15} {'Sequences':<12} {'Train Seq':<12} {'Test Seq':<12} {'Samples':<12} {'Train Samples':<15} {'Test Samples':<15} {'RMSE [N]':<12} {'STD [N]':<12} {'ΔF_min [N]':<14} {'KPM1':<6} {'KPM2':<6} {'Offset Acc':<12}")
+    print("-"*120)
     
     for model_name, result in trained_models.items():
         # Skip sensor8 models in main summary (they have their own section)
         if '_sensor8' in model_name:
             continue
-        fz_min = result.get('fz_min_actual', np.nan)
-        fz_max = result.get('fz_max_actual', np.nan)
-        fz_range_str = f"[{fz_min:.2f},{fz_max:.2f}]" if not np.isnan(fz_min) and not np.isnan(fz_max) else "N/A"
+        
+        # Get metrics
+        rmse = result.get('force_rmse', np.nan)
+        std_dev = result.get('force_std_dev', np.nan)
+        force_resolution = result.get('force_resolution_est', np.nan)
+        kpm1_pass = result.get('kpm1_pass', None)
+        kpm2_pass = result.get('kpm2_pass', None)
+        offset_acc = result.get('offset_accuracy', np.nan)
+        
+        # Format values (round to 2 decimal places for display and KPM checks)
+        rmse_rounded = round(rmse, 2) if not np.isnan(rmse) else np.nan
+        std_dev_rounded = round(std_dev, 2) if not np.isnan(std_dev) else np.nan
+        rmse_str = f"{rmse_rounded:.2f}" if not np.isnan(rmse_rounded) else "N/A"
+        std_str = f"{std_dev_rounded:.2f}" if not np.isnan(std_dev_rounded) else "N/A"
+        delta_f_str = f"{force_resolution:.4f}" if not np.isnan(force_resolution) else "N/A"
+        kpm1_str = "PASS" if kpm1_pass is True else "FAIL" if kpm1_pass is False else "N/A"
+        kpm2_str = "PASS" if kpm2_pass is True else "FAIL" if kpm2_pass is False else "N/A"
+        offset_acc_str = f"{offset_acc:.4f}" if not np.isnan(offset_acc) else "N/A"
+        
         print(f"{model_name:<15} {result['n_sequences']:<12} {result['n_train_sequences']:<12} "
               f"{result['n_test_sequences']:<12} {result['n_samples']:<12} "
               f"{result['n_train_samples']:<15} {result['n_test_samples']:<15} "
-              f"{result['force_rmse']:<10.4f} {result['offset_accuracy']:<12.4f} {fz_range_str:<15}")
+              f"{rmse_str:<12} {std_str:<12} {delta_f_str:<14} {kpm1_str:<6} {kpm2_str:<6} {offset_acc_str:<12}")
     
     print("="*100)
     print("\nForce Range Details:")

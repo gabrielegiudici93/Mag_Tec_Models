@@ -37,17 +37,46 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
     sequences_by_offset = defaultdict(list)  # {offset: [seq1, seq2, ...]}
     
     with h5py.File(h5_path, 'r') as hf:
-        forces = hf['forces'][:]  # [samples, 6]
-        labels = hf['labels'][:]  # [samples]
+        # Detect if this is simulation data
+        is_simulation = 'MagneticField' in hf and 'forcesTest' in hf
         
-        # Load magnetic sensor data if available
-        if 'stretchmagtec' in hf:
-            stretchmagtec = hf['stretchmagtec'][:]  # [samples, 15, 3]
+        if is_simulation:
+            # Load simulation data format
+            magnetic = hf['MagneticField'][:]  # [samples, 15, 3]
+            forces_test = hf['forcesTest'][:]  # [samples, 3] - Fx, Fy, Fz
+            
+            # Convert to real data format: forces [samples, 6] (Fx, Fy, Fz, Tx, Ty, Tz)
+            # For simulation, we only have Fx, Fy, Fz, so set torques to 0
+            forces = np.zeros((len(forces_test), 6), dtype=forces_test.dtype)
+            forces[:, :3] = forces_test  # Fx, Fy, Fz
+            # Tx, Ty, Tz remain 0
+            
+            # Convert magnetic [samples, 15, 3] to stretchmagtec format (same)
+            stretchmagtec = magnetic
+            
+            # Create labels from position if available
+            if 'IdenterPosition' in hf:
+                indenter = hf['IdenterPosition'][:]  # [samples, 3]
+                # Create position-based labels (simplified)
+                labels = np.array([f"pos_{i}" for i in range(len(indenter))])
+            else:
+                labels = np.array([f"seq_{i}" for i in range(len(forces))])
         else:
-            stretchmagtec = None
+            # Load real data format
+            forces = hf['forces'][:]  # [samples, 6]
+            labels = hf['labels'][:]  # [samples]
+            
+            # Load magnetic sensor data if available
+            if 'stretchmagtec' in hf:
+                stretchmagtec = hf['stretchmagtec'][:]  # [samples, 15, 3]
+            else:
+                stretchmagtec = None
         
         # Get timestamps if available
-        if 'timestamps' in hf:
+        if is_simulation:
+            # For simulation, create timestamps from sample index (assume 100 Hz)
+            time_relative = np.arange(len(forces)) / 100.0
+        elif 'timestamps' in hf:
             timestamps = hf['timestamps'][:]
             # Convert to relative time in seconds
             if timestamps.dtype.kind in {'S', 'O'}:
@@ -64,7 +93,145 @@ def load_raw_sequences(h5_path: Path, complete_only: bool = False, group_by_offs
             time_relative = np.arange(len(forces)) / 100.0
         
         if complete_only:
-            # Check if data is in presses group (new format)
+            # For simulation data, segment by position and map to offsets
+            if is_simulation:
+                # Import position_key function for mapping positions to offsets
+                try:
+                    # Try relative import first (when called as module)
+                    try:
+                        from training.train_simulation_positions import position_key, convert_to_sequences
+                    except ImportError:
+                        # Try absolute import (when called as script)
+                        import sys
+                        from pathlib import Path
+                        src_root = Path(__file__).parent.parent
+                        if str(src_root) not in sys.path:
+                            sys.path.insert(0, str(src_root))
+                        from training.train_simulation_positions import position_key, convert_to_sequences
+                except ImportError as e:
+                    # Fallback: treat as single sequence
+                    print(f"  Warning: Could not import position_key/convert_to_sequences: {e}")
+                    position_key = None
+                    convert_to_sequences = None
+                
+                # Check if indenter was loaded (it should be if is_simulation is True)
+                if 'IdenterPosition' in hf:
+                    indenter_for_segmentation = hf['IdenterPosition'][:]
+                else:
+                    indenter_for_segmentation = None
+                
+                if position_key is not None and convert_to_sequences is not None and indenter_for_segmentation is not None:
+                    # Segment simulation data by position and map to offsets
+                    # indenter was already loaded above
+                    
+                    # Create position labels
+                    position_labels = []
+                    for i in range(len(indenter_for_segmentation)):
+                        key, (x_mm, y_mm) = position_key(indenter_for_segmentation[i, :2])
+                        position_labels.append(key)
+                    
+                    # Convert to sequences (this will map positions to offsets)
+                    sim_sequences = convert_to_sequences(
+                        magnetic=stretchmagtec,
+                        forces=forces_test,
+                        indenter=indenter_for_segmentation,
+                        position_labels=position_labels,
+                        stretch_label='unknown',
+                    )
+                    
+                    print(f"  Converted simulation data to {len(sim_sequences)} sequences")
+                    
+                    # Convert simulation sequences to plot format
+                    for seq_idx, sim_seq in enumerate(sim_sequences):
+                        seq_id = f"sim_seq_{seq_idx}"
+                        offset = sim_seq.get('offset', 'unknown')
+                        
+                        # Extract forces components
+                        # convert_to_sequences returns 'fz' as array and 'forces' as [samples, 3]
+                        fz = sim_seq.get('fz', np.array([]))
+                        seq_forces = sim_seq.get('forces')
+                        if seq_forces is not None and len(seq_forces.shape) == 2 and seq_forces.shape[1] >= 3:
+                            fx = seq_forces[:, 0]
+                            fy = seq_forces[:, 1]
+                            fz_from_forces = seq_forces[:, 2]
+                            # Use fz from forces if fz is empty
+                            if len(fz) == 0:
+                                fz = fz_from_forces
+                        else:
+                            # Fallback: create forces array from fz
+                            fx = np.zeros(len(fz))
+                            fy = np.zeros(len(fz))
+                            if seq_forces is None:
+                                seq_forces = np.zeros((len(fz), 3))
+                                seq_forces[:, 2] = fz
+                        
+                        # Create time array for this sequence
+                        seq_time = np.arange(len(fz)) / 100.0  # Assume 100 Hz
+                        
+                        seq_data = {
+                            'time': seq_time,
+                            'fx': fx,
+                            'fy': fy,
+                            'fz': fz,
+                            'tx': np.zeros(len(fz)),
+                            'ty': np.zeros(len(fz)),
+                            'tz': np.zeros(len(fz)),
+                            'forces': seq_forces if seq_forces is not None else np.zeros((len(fz), 6)),
+                            'labels': np.array([f"sim_{seq_idx}_{i}" for i in range(len(fz))]),
+                            'indices': np.arange(len(fz)),
+                            'offset': offset,
+                            'press_id': seq_id,
+                        }
+                        
+                        # Add magnetic sensor data
+                        seq_mag = sim_seq.get('stretchmagtec')
+                        if seq_mag is not None and len(seq_mag.shape) == 3:
+                            seq_data['mag_ch8_z'] = seq_mag[:, 7, 2]  # Channel 8, Z component
+                            seq_data['mag_ch8'] = seq_mag[:, 7, :]  # Channel 8, all components
+                            seq_data['mag_all_channels'] = seq_mag  # All channels
+                        
+                        sequences[seq_id] = seq_data
+                        if group_by_offset:
+                            sequences_by_offset[offset].append(seq_data)
+                    
+                    return sequences if not group_by_offset else sequences_by_offset
+                else:
+                    # Fallback: treat entire dataset as a single sequence
+                    fx = forces[:, 0]  # Fx
+                    fy = forces[:, 1]  # Fy
+                    fz = forces[:, 2]  # Fz
+                    tx = forces[:, 3] if forces.shape[1] > 3 else np.zeros(len(fz))
+                    ty = forces[:, 4] if forces.shape[1] > 4 else np.zeros(len(fz))
+                    tz = forces[:, 5] if forces.shape[1] > 5 else np.zeros(len(fz))
+                    
+                    seq_id = "sim_sequence_0"
+                    seq_data = {
+                        'time': time_relative,
+                        'fx': fx,
+                        'fy': fy,
+                        'fz': fz,
+                        'tx': tx,
+                        'ty': ty,
+                        'tz': tz,
+                        'forces': forces,
+                        'labels': labels,
+                        'indices': np.arange(len(forces)),
+                        'offset': 'unknown',
+                        'press_id': seq_id,
+                    }
+                    
+                    if stretchmagtec is not None:
+                        seq_data['mag_ch8_z'] = stretchmagtec[:, 7, 2]
+                        seq_data['mag_ch8'] = stretchmagtec[:, 7, :]
+                        seq_data['mag_all_channels'] = stretchmagtec
+                    
+                    sequences[seq_id] = seq_data
+                    if group_by_offset:
+                        sequences_by_offset['unknown'].append(seq_data)
+                    
+                    return sequences if not group_by_offset else sequences_by_offset
+            
+            # Check if data is in presses group (new format) - for real data
             if 'presses' in hf:
                 presses_group = hf['presses']
                 for press_key in sorted(presses_group.keys()):
@@ -1167,21 +1334,34 @@ def main():
             return
         
         print(f"Loading raw data from: {args.h5_file}")
-        sequences = load_raw_sequences(args.h5_file, complete_only=True)
+        # Load sequences grouped by offset (needed for offset-based plots)
+        sequences_by_offset = load_raw_sequences(args.h5_file, complete_only=True, group_by_offset=True)
+        
+        # Flatten to get all sequences
+        sequences = {}
+        for offset, seqs in sequences_by_offset.items():
+            for seq in seqs:
+                sequences[seq['press_id']] = seq
         
         print(f"Found {len(sequences)} complete sequences:")
+        offset_counts = {}
         for press_id, seq in sorted(sequences.items()):
             duration = seq['time'][-1] - seq['time'][0] if len(seq['time']) > 1 else 0
-            print(f"  {press_id}: {len(seq['indices'])} samples, duration: {duration:.2f}s, Fz range: [{np.min(seq['fz']):.2f}, {np.max(seq['fz']):.2f}] N")
+            offset = seq.get('offset', 'unknown')
+            offset_counts[offset] = offset_counts.get(offset, 0) + 1
+            if len(sequences) <= 10:  # Only print details if few sequences
+                print(f"  {press_id}: {len(seq['indices'])} samples, duration: {duration:.2f}s, Fz range: [{np.min(seq['fz']):.2f}, {np.max(seq['fz']):.2f}] N, offset: {offset}")
+        
+        if len(sequences) > 10:
+            print(f"  ... and {len(sequences) - 10} more sequences")
+        
+        print(f"Sequences per offset: {offset_counts}")
         
         if len(sequences) == 0:
             print("  Warning: No complete sequences found. Skipping plots.")
             return
         
         print("\nGenerating plots...")
-        
-        # Load sequences grouped by offset for separate position plots
-        sequences_by_offset = load_raw_sequences(args.h5_file, complete_only=True, group_by_offset=True)
         
         # Remove 2 outliers per offset before plotting
         print(f"\nRemoving 2 outliers per offset before plotting...")
@@ -1258,15 +1438,10 @@ def main():
     print(f"\nAll plots saved to: {args.output_dir}")
 
 def plot_fz_ft_vs_magnetic(sequences: Dict[str, Dict], output_path: Path, press_id: str = None):
-    """Plot Fz from FT sensor vs magnetic sensor channel 8."""
+    """Plot Fz from FT sensor vs magnetic sensor channel 8 (absolute value, first sequence only)."""
     if press_id is None:
-        # Find first sequence that looks like a continuous press (not lift, start, etc.)
-        candidate_ids = [pid for pid in sorted(sequences.keys()) 
-                        if not any(x in pid.lower() for x in ['lift', 'start', 'controlled'])]
-        if candidate_ids:
-            press_id = candidate_ids[0]
-        else:
-            press_id = sorted(sequences.keys())[0]
+        # Use the first sequence (sorted by key)
+        press_id = sorted(sequences.keys())[0]
     
     if press_id not in sequences:
         print(f"  Warning: Press ID '{press_id}' not found, using first available")
@@ -1280,18 +1455,20 @@ def plot_fz_ft_vs_magnetic(sequences: Dict[str, Dict], output_path: Path, press_
     
     fig, ax = plt.subplots(figsize=(14, 8))
     
-    # Plot Fz from FT sensor on left y-axis (N)
-    ax.plot(seq['time'], seq['fz'], 'b-', linewidth=2, label='Fz FT Sensor', alpha=0.8)
+    # Plot Fz from FT sensor on left y-axis (N) - USE ABSOLUTE VALUE
+    fz_abs = np.abs(seq['fz'])
+    ax.plot(seq['time'], fz_abs, 'b-', linewidth=2, label='Fz FT Sensor |Fz|', alpha=0.8)
     ax.set_xlabel('Time (s)', fontsize=12)
-    ax.set_ylabel('Fz FT Sensor (N)', fontsize=12, color='b')
+    ax.set_ylabel('Fz FT Sensor |Fz| (N)', fontsize=12, color='b')
     ax.tick_params(axis='y', labelcolor='b')
     ax.grid(True, alpha=0.3)
     ax.axhline(y=0, color='b', linestyle='--', linewidth=0.5, alpha=0.5)
     
-    # Plot magnetic sensor channel 8, Z component on right y-axis (digits)
+    # Plot magnetic sensor channel 8, Z component on right y-axis (digits) - USE ABSOLUTE VALUE
+    mag_ch8_abs = np.abs(seq['mag_ch8_z'])
     ax2 = ax.twinx()
-    ax2.plot(seq['time'], seq['mag_ch8_z'], 'r-', linewidth=2, label='Magnetic Sensor Ch8 (Z)', alpha=0.8)
-    ax2.set_ylabel('Magnetic Sensor Ch8 (Z) [digits]', fontsize=12, color='r')
+    ax2.plot(seq['time'], mag_ch8_abs, 'r-', linewidth=2, label='Magnetic Sensor Ch8 |Z|', alpha=0.8)
+    ax2.set_ylabel('Magnetic Sensor Ch8 |Z| [digits]', fontsize=12, color='r')
     ax2.tick_params(axis='y', labelcolor='r')
     ax2.axhline(y=0, color='r', linestyle='--', linewidth=0.5, alpha=0.5)
     
@@ -1300,16 +1477,16 @@ def plot_fz_ft_vs_magnetic(sequences: Dict[str, Dict], output_path: Path, press_
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=11)
     
-    ax.set_title(f'Fz FT Sensor (N) vs Magnetic Sensor Channel 8 (Z) [digits] - Sequence: {press_id}', fontsize=14)
+    ax.set_title(f'Fz FT Sensor |Fz| (N) vs Magnetic Sensor Channel 8 |Z| [digits] - First Sequence: {press_id}', fontsize=14, fontweight='bold')
     
     # Add text box with statistics
-    stats_text = f"""Statistics:
+    stats_text = f"""Statistics (First Sequence):
 Samples: {len(seq['indices'])}
 Duration: {seq['time'][-1] - seq['time'][0]:.2f} s
-Fz FT range: [{np.min(seq['fz']):.2f}, {np.max(seq['fz']):.2f}] N
-Fz FT mean: {np.mean(seq['fz']):.2f} N
-Mag Ch8 Z range: [{np.min(seq['mag_ch8_z']):.2f}, {np.max(seq['mag_ch8_z']):.2f}]
-Mag Ch8 Z mean: {np.mean(seq['mag_ch8_z']):.2f}"""
+Fz FT |Fz| range: [{np.min(fz_abs):.2f}, {np.max(fz_abs):.2f}] N
+Fz FT |Fz| mean: {np.mean(fz_abs):.2f} N
+Mag Ch8 |Z| range: [{np.min(mag_ch8_abs):.2f}, {np.max(mag_ch8_abs):.2f}]
+Mag Ch8 |Z| mean: {np.mean(mag_ch8_abs):.2f}"""
     
     fig.text(0.02, 0.02, stats_text, fontsize=9, verticalalignment='bottom',
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
@@ -1317,7 +1494,7 @@ Mag Ch8 Z mean: {np.mean(seq['mag_ch8_z']):.2f}"""
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  Saved: {output_path.name} (Press ID: {press_id})")
+    print(f"  Saved: {output_path.name} (First Sequence: {press_id}, using |Z|)")
 
 def plot_magnetic_only(sequences: Dict[str, Dict], output_path: Path, press_id: str = None):
     """Plot only magnetic sensor channel 8 (Z component)."""

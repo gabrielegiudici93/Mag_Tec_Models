@@ -18,13 +18,13 @@ import h5py
 from pathlib import Path
 
 
-def calculate_force_resolution(forces: np.ndarray, decimals: int = 3) -> float:
+def calculate_force_resolution(forces: np.ndarray, decimals: int = 2) -> float:
     """
     Calculate the minimum force resolution (KPM1) from force values.
     
     Args:
         forces: Array of force values (ground truth or predicted)
-        decimals: Number of decimal places to round to
+        decimals: Number of decimal places to round to (default: 2 to match FT sensor 0.01N precision)
         
     Returns:
         Minimum force resolution (delta F_min) in Newtons
@@ -149,8 +149,8 @@ def main():
     parser.add_argument(
         "--decimals",
         type=int,
-        default=3,
-        help="Number of decimal places for rounding (default: 3)"
+        default=2,
+        help="Number of decimal places for rounding (default: 2 to match FT sensor 0.01N precision)"
     )
     
     args = parser.parse_args()

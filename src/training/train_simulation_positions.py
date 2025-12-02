@@ -262,68 +262,213 @@ def convert_to_sequences(
                     offset_map[pos_label] = "ne" if dy > 0 else "nw"
     
     for pos_label, indices in position_groups.items():
-        # Extract sequence data
-        seq_magnetic = magnetic[indices]  # [samples_in_seq, 15, 3]
+        # Extract all data for this position
+        pos_magnetic = magnetic[indices]  # [samples_in_pos, 15, 3]
+        pos_forces = forces[indices] if forces is not None else None
+        pos_fz = np.abs(pos_forces[:, 2]) if pos_forces is not None else None
         
-        seq_forces = None
-        seq_fz = None
-        if forces is not None:
-            seq_forces = forces[indices]  # [samples_in_seq, 3]
-            seq_fz = np.abs(seq_forces[:, 2])  # Fz component (use absolute value for training)
+        # Segment into force cycles (0N -> 3N -> 0N)
+        # A valid cycle should:
+        # 1. Start from low force (< 0.2N)
+        # 2. Rise to high force (> 2.5N)
+        # 3. Return to low force (< 0.2N)
+        # 4. Have minimum duration (at least 50 samples for a complete cycle)
         
-        # Downsample to match real data sequence length (~81 samples average)
-        # Use linear interpolation to downsample if sequence is too long
-        target_length = 81  # Average from real data
-        if len(seq_magnetic) > target_length:
-            # Downsample using linear interpolation
-            if len(seq_magnetic) > 1:
-                # Resample to target_length
-                original_indices = np.linspace(0, len(seq_magnetic) - 1, len(seq_magnetic))
-                target_indices = np.linspace(0, len(seq_magnetic) - 1, target_length)
+        if pos_fz is not None and len(pos_fz) > 50:
+            # Find force cycles
+            low_force_threshold = 0.2
+            high_force_threshold = 2.5
+            min_cycle_length = 50  # Minimum samples for a valid cycle
+            
+            cycle_starts = []
+            cycle_ends = []
+            in_cycle = False
+            cycle_start_idx = None
+            reached_high_force = False
+            
+            for i in range(1, len(pos_fz)):
+                # Start of cycle: force rises above low threshold after being below
+                if not in_cycle and pos_fz[i] > low_force_threshold and pos_fz[i-1] <= low_force_threshold:
+                    cycle_start_idx = i - 1  # Include the sample before threshold crossing
+                    in_cycle = True
+                    reached_high_force = False
+                # Mark that we reached high force
+                elif in_cycle and pos_fz[i] > high_force_threshold:
+                    reached_high_force = True
+                # End of cycle: force drops below low threshold after being above AND we reached high force
+                elif in_cycle and pos_fz[i] < low_force_threshold and pos_fz[i-1] >= low_force_threshold and reached_high_force:
+                    cycle_end_idx = i
+                    # Only add cycle if it's long enough
+                    if cycle_end_idx - cycle_start_idx >= min_cycle_length:
+                        cycle_starts.append(cycle_start_idx)
+                        cycle_ends.append(cycle_end_idx)
+                    in_cycle = False
+                    reached_high_force = False
+            
+            # If we're still in a cycle at the end, close it if it's valid
+            if in_cycle and reached_high_force and cycle_start_idx is not None:
+                cycle_end_idx = len(pos_fz) - 1
+                if cycle_end_idx - cycle_start_idx >= min_cycle_length:
+                    cycle_starts.append(cycle_start_idx)
+                    cycle_ends.append(cycle_end_idx)
+            
+            # Create sequences from cycles
+            if len(cycle_starts) > 0:
+                # Ensure we have matching starts and ends
+                min_cycles = min(len(cycle_starts), len(cycle_ends))
+                cycle_starts = cycle_starts[:min_cycles]
+                cycle_ends = cycle_ends[:min_cycles]
                 
-                # Interpolate magnetic data
-                seq_magnetic_downsampled = np.zeros((target_length, seq_magnetic.shape[1], seq_magnetic.shape[2]))
-                for sensor in range(seq_magnetic.shape[1]):
-                    for channel in range(seq_magnetic.shape[2]):
-                        seq_magnetic_downsampled[:, sensor, channel] = np.interp(
-                            target_indices, original_indices, seq_magnetic[:, sensor, channel]
-                        )
-                seq_magnetic = seq_magnetic_downsampled
+                for cycle_idx, (start_idx, end_idx) in enumerate(zip(cycle_starts, cycle_ends)):
+                    # Map global indices back to position indices
+                    cycle_pos_indices = indices[start_idx:end_idx]
+                    
+                    # Extract sequence data
+                    seq_magnetic = magnetic[cycle_pos_indices]  # [samples_in_seq, 15, 3]
+                    seq_forces = forces[cycle_pos_indices] if forces is not None else None
+                    seq_fz = np.abs(seq_forces[:, 2]) if seq_forces is not None else None
+                    
+                    # Process this sequence (same as before)
+                    target_length = 81  # Average from real data
+                    if len(seq_magnetic) > target_length:
+                        if len(seq_magnetic) > 1:
+                            original_indices = np.linspace(0, len(seq_magnetic) - 1, len(seq_magnetic))
+                            target_indices = np.linspace(0, len(seq_magnetic) - 1, target_length)
+                            
+                            seq_magnetic_downsampled = np.zeros((target_length, seq_magnetic.shape[1], seq_magnetic.shape[2]))
+                            for sensor in range(seq_magnetic.shape[1]):
+                                for channel in range(seq_magnetic.shape[2]):
+                                    seq_magnetic_downsampled[:, sensor, channel] = np.interp(
+                                        target_indices, original_indices, seq_magnetic[:, sensor, channel]
+                                    )
+                            seq_magnetic = seq_magnetic_downsampled
+                            
+                            if seq_forces is not None:
+                                seq_forces_downsampled = np.zeros((target_length, seq_forces.shape[1]))
+                                for channel in range(seq_forces.shape[1]):
+                                    seq_forces_downsampled[:, channel] = np.interp(
+                                        target_indices, original_indices, seq_forces[:, channel]
+                                    )
+                                seq_forces = seq_forces_downsampled
+                                seq_fz = np.abs(seq_forces[:, 2])
+                    
+                    # Filter magnetic sensor: set values below 250 to 0 (noise threshold)
+                    seq_magnetic = np.where(np.abs(seq_magnetic) < 250, 0, seq_magnetic)
+                    
+                    # Map position to offset name
+                    offset = offset_map.get(pos_label, "unknown")
+                    
+                    # Calculate duration
+                    duration = len(seq_magnetic) / 100.0
+                    
+                    # Calculate required fields for outlier removal
+                    fz_max = float(np.max(seq_fz)) if seq_fz is not None and len(seq_fz) > 0 else 0.0
+                    num_samples = len(seq_magnetic)
+                    
+                    sequence = {
+                        'stretchmagtec': seq_magnetic,
+                        'forces': seq_forces,
+                        'fz': seq_fz if seq_fz is not None else np.zeros(len(seq_magnetic)),
+                        'offset': offset,
+                        'stretch': stretch_label,
+                        'duration': duration,
+                        'fz_max': fz_max,
+                        'num_samples': num_samples,
+                    }
+                    sequences.append(sequence)
+            else:
+                # No valid cycles found, use entire position as single sequence (fallback)
+                seq_magnetic = pos_magnetic
+                seq_forces = pos_forces
+                seq_fz = pos_fz
                 
-                # Interpolate forces if available
-                if seq_forces is not None:
-                    seq_forces_downsampled = np.zeros((target_length, seq_forces.shape[1]))
-                    for channel in range(seq_forces.shape[1]):
-                        seq_forces_downsampled[:, channel] = np.interp(
-                            target_indices, original_indices, seq_forces[:, channel]
-                        )
-                    seq_forces = seq_forces_downsampled
-                    seq_fz = np.abs(seq_forces[:, 2])  # Use absolute value for training
-        
-        # Filter magnetic sensor: set values below 250 to 0 (noise threshold)
-        seq_magnetic = np.where(np.abs(seq_magnetic) < 250, 0, seq_magnetic)
-        
-        # Map position to offset name
-        offset = offset_map.get(pos_label, "unknown")
-        
-        # Calculate duration (number of samples, assuming ~100Hz sampling rate)
-        duration = len(seq_magnetic) / 100.0  # Approximate duration in seconds
-        
-        # Calculate required fields for outlier removal
-        fz_max = float(np.max(seq_fz)) if seq_fz is not None and len(seq_fz) > 0 else 0.0
-        num_samples = len(seq_magnetic)
-        
-        sequence = {
-            'stretchmagtec': seq_magnetic,
-            'forces': seq_forces,
-            'fz': seq_fz if seq_fz is not None else np.zeros(len(seq_magnetic)),
-            'offset': offset,
-            'stretch': stretch_label,
-            'duration': duration,  # Required for outlier removal
-            'fz_max': fz_max,      # Required for outlier removal
-            'num_samples': num_samples,  # Required for outlier removal
-        }
-        sequences.append(sequence)
+                # Downsample if needed
+                target_length = 81
+                if len(seq_magnetic) > target_length:
+                    if len(seq_magnetic) > 1:
+                        original_indices = np.linspace(0, len(seq_magnetic) - 1, len(seq_magnetic))
+                        target_indices = np.linspace(0, len(seq_magnetic) - 1, target_length)
+                        
+                        seq_magnetic_downsampled = np.zeros((target_length, seq_magnetic.shape[1], seq_magnetic.shape[2]))
+                        for sensor in range(seq_magnetic.shape[1]):
+                            for channel in range(seq_magnetic.shape[2]):
+                                seq_magnetic_downsampled[:, sensor, channel] = np.interp(
+                                    target_indices, original_indices, seq_magnetic[:, sensor, channel]
+                                )
+                        seq_magnetic = seq_magnetic_downsampled
+                        
+                        if seq_forces is not None:
+                            seq_forces_downsampled = np.zeros((target_length, seq_forces.shape[1]))
+                            for channel in range(seq_forces.shape[1]):
+                                seq_forces_downsampled[:, channel] = np.interp(
+                                    target_indices, original_indices, seq_forces[:, channel]
+                                )
+                            seq_forces = seq_forces_downsampled
+                            seq_fz = np.abs(seq_forces[:, 2])
+                
+                seq_magnetic = np.where(np.abs(seq_magnetic) < 250, 0, seq_magnetic)
+                offset = offset_map.get(pos_label, "unknown")
+                duration = len(seq_magnetic) / 100.0
+                fz_max = float(np.max(seq_fz)) if seq_fz is not None and len(seq_fz) > 0 else 0.0
+                num_samples = len(seq_magnetic)
+                
+                sequence = {
+                    'stretchmagtec': seq_magnetic,
+                    'forces': seq_forces,
+                    'fz': seq_fz if seq_fz is not None else np.zeros(len(seq_magnetic)),
+                    'offset': offset,
+                    'stretch': stretch_label,
+                    'duration': duration,
+                    'fz_max': fz_max,
+                    'num_samples': num_samples,
+                }
+                sequences.append(sequence)
+        else:
+            # No force data or too short, use entire position as single sequence
+            seq_magnetic = pos_magnetic
+            seq_forces = pos_forces
+            seq_fz = pos_fz
+            
+            target_length = 81
+            if len(seq_magnetic) > target_length:
+                if len(seq_magnetic) > 1:
+                    original_indices = np.linspace(0, len(seq_magnetic) - 1, len(seq_magnetic))
+                    target_indices = np.linspace(0, len(seq_magnetic) - 1, target_length)
+                    
+                    seq_magnetic_downsampled = np.zeros((target_length, seq_magnetic.shape[1], seq_magnetic.shape[2]))
+                    for sensor in range(seq_magnetic.shape[1]):
+                        for channel in range(seq_magnetic.shape[2]):
+                            seq_magnetic_downsampled[:, sensor, channel] = np.interp(
+                                target_indices, original_indices, seq_magnetic[:, sensor, channel]
+                            )
+                    seq_magnetic = seq_magnetic_downsampled
+                    
+                    if seq_forces is not None:
+                        seq_forces_downsampled = np.zeros((target_length, seq_forces.shape[1]))
+                        for channel in range(seq_forces.shape[1]):
+                            seq_forces_downsampled[:, channel] = np.interp(
+                                target_indices, original_indices, seq_forces[:, channel]
+                            )
+                        seq_forces = seq_forces_downsampled
+                        seq_fz = np.abs(seq_forces[:, 2])
+            
+            seq_magnetic = np.where(np.abs(seq_magnetic) < 250, 0, seq_magnetic)
+            offset = offset_map.get(pos_label, "unknown")
+            duration = len(seq_magnetic) / 100.0
+            fz_max = float(np.max(seq_fz)) if seq_fz is not None and len(seq_fz) > 0 else 0.0
+            num_samples = len(seq_magnetic)
+            
+            sequence = {
+                'stretchmagtec': seq_magnetic,
+                'forces': seq_forces,
+                'fz': seq_fz if seq_fz is not None else np.zeros(len(seq_magnetic)),
+                'offset': offset,
+                'stretch': stretch_label,
+                'duration': duration,
+                'fz_max': fz_max,
+                'num_samples': num_samples,
+            }
+            sequences.append(sequence)
     
     return sequences
 
@@ -368,7 +513,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run directory.")
     parser.add_argument("--target-sequences", type=int, default=None, help="Target number of sequences per stretch (duplicate if needed).")
     parser.add_argument("--use-gpu", action="store_true", help="Use GPU acceleration if available.")
-    parser.add_argument("--z-threshold", type=float, default=3.0, help="Z-score threshold for outlier removal.")
+    parser.add_argument("--z-threshold", type=float, default=3.0, help="Z-score threshold for outlier removal (only used if --remove-outliers is set).")
+    parser.add_argument(
+        "--remove-outliers",
+        action="store_true",
+        default=False,
+        help="Enable outlier removal. By default, outliers are NOT removed for simulation data. Use this flag to enable outlier removal."
+    )
     return parser.parse_args()
 
 
@@ -428,8 +579,16 @@ def main() -> None:
             position_map[label] = canonical_xy  # Store unique positions
             position_labels.append(label)  # One label per sample
 
-        # Convert to sequences (group by position)
+        # Convert to sequences (group by position and segment by force cycles)
         sequences = convert_to_sequences(magnetic, forces, indenter, position_labels, stretch)
+        
+        # Count sequences per offset
+        from collections import Counter
+        offset_counts = Counter(seq['offset'] for seq in sequences)
+        print(f"  Created {len(sequences)} sequences from {file_path.name}:")
+        for offset, count in sorted(offset_counts.items()):
+            print(f"    {offset}: {count} sequences")
+        
         sequences_by_stretch[stretch].extend(sequences)
 
         # Copy the original file for reference
@@ -449,21 +608,27 @@ def main() -> None:
             print(f"{stretch}: {original_count} → {len(sequences_by_stretch[stretch])} sequences")
 
     # ========================================================================
-    # STEP 3: REMOVE OUTLIERS AND BALANCE SEQUENCES
+    # STEP 3: REMOVE OUTLIERS (OPTIONAL) AND BALANCE SEQUENCES
     # ========================================================================
     print(f"\n{'='*80}")
-    print("REMOVING OUTLIERS AND BALANCING")
+    if args.remove_outliers:
+        print("REMOVING OUTLIERS AND BALANCING")
+    else:
+        print("BALANCING SEQUENCES (outlier removal disabled)")
     print(f"{'='*80}")
     
     for stretch in list(sequences_by_stretch.keys()):
         sequences = sequences_by_stretch[stretch]
         print(f"\n{stretch}: {len(sequences)} sequences before cleaning")
         
-        # Remove outliers (returns tuple: (cleaned_sequences, outlier_indices))
-        cleaned_sequences, outlier_indices = remove_outliers(sequences, z_threshold=args.z_threshold)
-        print(f"{stretch}: {len(cleaned_sequences)} sequences after outlier removal (removed {len(outlier_indices)} outliers)")
-        
-        sequences_by_stretch[stretch] = cleaned_sequences
+        if args.remove_outliers:
+            # Remove outliers (returns tuple: (cleaned_sequences, outlier_indices))
+            cleaned_sequences, outlier_indices = remove_outliers(sequences, z_threshold=args.z_threshold)
+            print(f"{stretch}: {len(cleaned_sequences)} sequences after outlier removal (removed {len(outlier_indices)} outliers)")
+            sequences_by_stretch[stretch] = cleaned_sequences
+        else:
+            print(f"{stretch}: {len(sequences)} sequences (outlier removal skipped)")
+            # Keep all sequences, no removal
     
     # Balance sequences across stretch levels
     sequences_by_stretch = balance_sequences(sequences_by_stretch)
@@ -671,6 +836,7 @@ def main() -> None:
             'target_sequences': args.target_sequences,
             'use_gpu': args.use_gpu,
             'z_threshold': args.z_threshold,
+            'outliers_removed': args.remove_outliers,
         },
     }
     

@@ -291,7 +291,8 @@ def train_force_regressor(X: np.ndarray, y: np.ndarray, label: str, train_ratio:
     residuals = y_test - y_pred
     std_dev = float(np.std(residuals))
 
-    unique_forces = np.unique(np.round(y, decimals=3))
+    # Round to match FT sensor precision (0.01N = 2 decimal places)
+    unique_forces = np.unique(np.round(y, decimals=2))
     if len(unique_forces) > 1:
         deltas = np.diff(unique_forces)
         force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
@@ -404,7 +405,8 @@ def evaluate_combined_pipeline(
     residuals = y_fz_test - y_fz_pred
     std_dev = float(np.std(residuals))
 
-    unique_forces = np.unique(np.round(fz, decimals=3))
+    # Round to match FT sensor precision (0.01N = 2 decimal places)
+    unique_forces = np.unique(np.round(fz, decimals=2))
     if len(unique_forces) > 1:
         deltas = np.diff(unique_forces)
         force_resolution = float(np.min(np.abs(deltas[np.abs(deltas) > 0])))
