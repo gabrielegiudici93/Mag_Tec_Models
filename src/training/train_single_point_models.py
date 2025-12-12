@@ -99,12 +99,25 @@ def load_sequences_from_h5(h5_path: Path) -> List[Dict]:
             if isinstance(stretch_label, bytes):
                 stretch_label = stretch_label.decode('utf-8')
             
-            # Extract offset from label
-            offset = 'unknown'
-            for offset_key in ['center', 'ne', 'nw', 'sw', 'se']:
-                if offset_key in label.lower():
-                    offset = offset_key
-                    break
+            # Extract offset/location from attribute first (preferred), then from label
+            offset = press.attrs.get('offset', None)
+            if offset is not None:
+                if isinstance(offset, bytes):
+                    offset = offset.decode('utf-8')
+            else:
+                # Fall back to extracting from label
+                offset = 'unknown'
+                # First try to find numeric offsets (1-10) for multi-point data
+                import re
+                numeric_match = re.search(r'offset[_\s]*(\d+)|pos_\d+_(\d+)_press', label.lower())
+                if numeric_match:
+                    offset = numeric_match.group(1) or numeric_match.group(2)  # Keep as string '1', '2', ..., '10'
+                else:
+                    # Fall back to named offsets (center, ne, nw, sw, se) for single-point data
+                    for offset_key in ['center', 'ne', 'nw', 'sw', 'se']:
+                        if offset_key in label.lower():
+                            offset = offset_key
+                            break
             
             # Get timestamps
             if 'timestamps' in press:
@@ -491,9 +504,16 @@ def prepare_training_data(sequences: List[Dict], normalize: bool = True, use_fea
             features = magnetic.reshape(magnetic.shape[0], -1)
         
         # Store raw Fz values (will normalize after concatenation)
-        # Get offset (encode as integer)
-        offset_map = {'center': 0, 'ne': 1, 'nw': 2, 'se': 3, 'sw': 4, 'unknown': -1}
-        offset = offset_map.get(seq['offset'], -1)
+        # Get offset/location (encode as integer)
+        offset_str = str(seq['offset'])
+        # Try to detect if it's a numeric offset (multi-point) or named offset (single-point)
+        if offset_str.isdigit():
+            # Multi-point: '1', '2', ..., '10' -> 0, 1, ..., 9
+            offset = int(offset_str) - 1  # Convert '1'-'10' to 0-9
+        else:
+            # Single-point: named offsets
+            offset_map = {'center': 0, 'ne': 1, 'nw': 2, 'se': 3, 'sw': 4, 'unknown': -1}
+            offset = offset_map.get(offset_str, -1)
         
         # Add advanced features if requested
         if use_advanced_features:
@@ -1889,4 +1909,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

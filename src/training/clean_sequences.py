@@ -323,32 +323,16 @@ def clean_single_file(h5_path: Path, output_path: Path, z_threshold: float = 3.0
         initial_offset_counts[offset] = initial_offset_counts.get(offset, 0) + 1
     print(f"  Initial sequences per offset: {initial_offset_counts}")
     
-    # Remove first sequence per offset (warm-up/calibration sequence) BEFORE outlier removal
-    print(f"\n  Removing first sequence per offset...")
-    sequences_by_offset = {}
-    for idx, seq in enumerate(sequences):
-        offset = seq.get('offset', 'unknown')
-        if offset not in sequences_by_offset:
-            sequences_by_offset[offset] = []
-        sequences_by_offset[offset].append((idx, seq))
+    # NOTE: First sequence per offset was already removed during data collection
+    # Do NOT remove it again here
+    print(f"\n  NOTE: First sequence per offset was already removed during data collection")
+    print(f"  Skipping first sequence removal (using all {len(sequences)} sequences)")
+    sequences_after_first_removal = sequences
     
-    first_sequence_indices = set()
-    for offset, offset_sequences in sequences_by_offset.items():
-        if len(offset_sequences) > 1:  # Only remove if there's more than one sequence
-            # Get the first sequence index (assuming sequences are in order)
-            first_idx = offset_sequences[0][0]
-            first_sequence_indices.add(first_idx)
-            print(f"    Offset {offset}: Removing first sequence (index: {first_idx})")
-    
-    if first_sequence_indices:
-        sequences_after_first_removal = [s for i, s in enumerate(sequences) if i not in first_sequence_indices]
-        print(f"  After removing first sequences: {len(sequences_after_first_removal)} sequences (removed {len(first_sequence_indices)} first sequences)")
-    else:
-        sequences_after_first_removal = sequences
-    
-    # Remove outliers (2 per offset, independently) from remaining sequences
-    print(f"\n  Removing outliers ({remove_per_offset} per offset, independently)...")
-    print(f"  Expected after outlier removal: {len(sequences_after_first_removal)} - (5 offsets * {remove_per_offset} outliers) = {len(sequences_after_first_removal) - (5 * remove_per_offset)} sequences")
+    # Remove outliers (2 per offset/location, independently) from sequences
+    n_locations = len(initial_offset_counts)
+    print(f"\n  Removing outliers ({remove_per_offset} per location, independently)...")
+    print(f"  Expected after outlier removal: {len(sequences_after_first_removal)} - ({n_locations} locations * {remove_per_offset} outliers) = {len(sequences_after_first_removal) - (n_locations * remove_per_offset)} sequences")
     cleaned_sequences, outlier_indices = remove_outliers(sequences_after_first_removal, z_threshold, remove_per_offset=remove_per_offset)
     print(f"  After outlier removal: {len(cleaned_sequences)} sequences (removed {len(outlier_indices)} outliers)")
     
@@ -357,8 +341,11 @@ def clean_single_file(h5_path: Path, output_path: Path, z_threshold: float = 3.0
     for seq in cleaned_sequences:
         offset = seq.get('offset', 'unknown')
         offset_counts[offset] = offset_counts.get(offset, 0) + 1
-    print(f"  Sequences per offset after cleaning: {offset_counts}")
-    print(f"  Expected per offset: ~{len(sequences_after_first_removal) // 5 - remove_per_offset} sequences")
+    print(f"  Sequences per location after cleaning: {offset_counts}")
+    n_locations = len(offset_counts)
+    if n_locations > 0:
+        expected_per_location = len(sequences_after_first_removal) // n_locations - remove_per_offset
+        print(f"  Expected per location: {expected_per_location} sequences")
     
     # Save cleaned sequences
     saved_path = save_cleaned_sequences(cleaned_sequences, output_path, h5_path)
@@ -575,4 +562,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

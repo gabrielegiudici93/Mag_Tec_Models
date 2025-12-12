@@ -1072,3 +1072,701 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+                                print(f"[DEBUG] Skipping {labels[i]} - invalid data (NaN/Inf)")
+                
+                self.ft_plot.setTitle("FT Sensor Data (Fx, Fy, Fz)")
+                # Set fixed Y range for FT plot: -15 to 15 N
+                self.ft_plot.setYRange(-15, 15, padding=0)
+                # Auto-range X axis - ensure it starts from 0 or positive
+                if len(time_array) > 0:
+                    x_min = max(0, time_array[0] - 0.1)
+                    x_max = time_array[-1] + 0.1
+                    self.ft_plot.setXRange(x_min, x_max, padding=0)
+            else:
+                if self._debug_counter % 20 == 0:
+                    print(f"[DEBUG] FT plot skipped: ft_data={ft_data is not None}, "
+                          f"len(relative_time)={len(relative_time) if relative_time else 0}")
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing - SAME LOGIC AS NON-GPU
+                    if len(relative_time) == 0 and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = np.array([(t - self.sensor_reader.session_start_time) for t in time_data])
+                        else:
+                            relative_time = np.array(list(range(len(stretchmagtec_array)))) * 0.01  # Assume 100Hz
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # x=time, y=magnetic field values - ensure arrays are 1D
+                                mag_data = sensor_data[:, 0]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.x_plot_items:
+                                        self.x_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.x_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.x_plot_items[key] = plot_item
+                        
+                        self.x_plot.setTitle(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.x_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.x_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.x_plot.setTitle("X-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.x_plot.setTitle("X-Axis: Error plotting data")
+            else:
+                self.x_plot.setTitle("X-Axis: Select sensors to plot")
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 1]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.y_plot_items:
+                                        self.y_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.y_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.y_plot_items[key] = plot_item
+                        
+                        self.y_plot.setTitle(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.y_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.y_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.y_plot.setTitle("Y-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.y_plot.setTitle("Y-Axis: Error plotting data")
+            else:
+                self.y_plot.setTitle("Y-Axis: Select sensors to plot")
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 2]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    # Convert to lists to avoid numpy issues
+                                    time_list = time_array.tolist() if isinstance(time_array, np.ndarray) else list(time_array)
+                                    mag_list = mag_data.tolist() if isinstance(mag_data, np.ndarray) else list(mag_data)
+                                    if key in self.z_plot_items:
+                                        self.z_plot_items[key].setData(time_list, mag_list, autoDownsample=True)
+                                        self.z_plot_items[key].setVisible(True)
+                                    else:
+                                        plot_item = self.z_plot.plot(time_list, mag_list, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.z_plot_items[key] = plot_item
+                                        plot_item.setVisible(True)
+                        
+                        self.z_plot.setTitle(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.z_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.z_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.z_plot.setTitle("Z-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.z_plot.setTitle("Z-Axis: Error plotting data")
+            else:
+                self.z_plot.setTitle("Z-Axis: Select sensors to plot")
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def closeEvent(self, event):
+        """Handle window closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        event.accept()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC (GPU ACCELERATED)")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("Using PyQtGraph with OpenGL acceleration")
+    print("="*60)
+    
+    app = QtWidgets.QApplication(sys.argv)
+    window = SensorVisualizationGUI()
+    window.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
+
+                                print(f"[DEBUG] Skipping {labels[i]} - invalid data (NaN/Inf)")
+                
+                self.ft_plot.setTitle("FT Sensor Data (Fx, Fy, Fz)")
+                # Set fixed Y range for FT plot: -15 to 15 N
+                self.ft_plot.setYRange(-15, 15, padding=0)
+                # Auto-range X axis - ensure it starts from 0 or positive
+                if len(time_array) > 0:
+                    x_min = max(0, time_array[0] - 0.1)
+                    x_max = time_array[-1] + 0.1
+                    self.ft_plot.setXRange(x_min, x_max, padding=0)
+            else:
+                if self._debug_counter % 20 == 0:
+                    print(f"[DEBUG] FT plot skipped: ft_data={ft_data is not None}, "
+                          f"len(relative_time)={len(relative_time) if relative_time else 0}")
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing - SAME LOGIC AS NON-GPU
+                    if len(relative_time) == 0 and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = np.array([(t - self.sensor_reader.session_start_time) for t in time_data])
+                        else:
+                            relative_time = np.array(list(range(len(stretchmagtec_array)))) * 0.01  # Assume 100Hz
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # x=time, y=magnetic field values - ensure arrays are 1D
+                                mag_data = sensor_data[:, 0]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.x_plot_items:
+                                        self.x_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.x_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.x_plot_items[key] = plot_item
+                        
+                        self.x_plot.setTitle(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.x_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.x_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.x_plot.setTitle("X-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.x_plot.setTitle("X-Axis: Error plotting data")
+            else:
+                self.x_plot.setTitle("X-Axis: Select sensors to plot")
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 1]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.y_plot_items:
+                                        self.y_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.y_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.y_plot_items[key] = plot_item
+                        
+                        self.y_plot.setTitle(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.y_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.y_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.y_plot.setTitle("Y-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.y_plot.setTitle("Y-Axis: Error plotting data")
+            else:
+                self.y_plot.setTitle("Y-Axis: Select sensors to plot")
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 2]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    # Convert to lists to avoid numpy issues
+                                    time_list = time_array.tolist() if isinstance(time_array, np.ndarray) else list(time_array)
+                                    mag_list = mag_data.tolist() if isinstance(mag_data, np.ndarray) else list(mag_data)
+                                    if key in self.z_plot_items:
+                                        self.z_plot_items[key].setData(time_list, mag_list, autoDownsample=True)
+                                        self.z_plot_items[key].setVisible(True)
+                                    else:
+                                        plot_item = self.z_plot.plot(time_list, mag_list, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.z_plot_items[key] = plot_item
+                                        plot_item.setVisible(True)
+                        
+                        self.z_plot.setTitle(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.z_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.z_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.z_plot.setTitle("Z-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.z_plot.setTitle("Z-Axis: Error plotting data")
+            else:
+                self.z_plot.setTitle("Z-Axis: Select sensors to plot")
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def closeEvent(self, event):
+        """Handle window closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        event.accept()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC (GPU ACCELERATED)")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("Using PyQtGraph with OpenGL acceleration")
+    print("="*60)
+    
+    app = QtWidgets.QApplication(sys.argv)
+    window = SensorVisualizationGUI()
+    window.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
+                                print(f"[DEBUG] Skipping {labels[i]} - invalid data (NaN/Inf)")
+                
+                self.ft_plot.setTitle("FT Sensor Data (Fx, Fy, Fz)")
+                # Set fixed Y range for FT plot: -15 to 15 N
+                self.ft_plot.setYRange(-15, 15, padding=0)
+                # Auto-range X axis - ensure it starts from 0 or positive
+                if len(time_array) > 0:
+                    x_min = max(0, time_array[0] - 0.1)
+                    x_max = time_array[-1] + 0.1
+                    self.ft_plot.setXRange(x_min, x_max, padding=0)
+            else:
+                if self._debug_counter % 20 == 0:
+                    print(f"[DEBUG] FT plot skipped: ft_data={ft_data is not None}, "
+                          f"len(relative_time)={len(relative_time) if relative_time else 0}")
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing - SAME LOGIC AS NON-GPU
+                    if len(relative_time) == 0 and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = np.array([(t - self.sensor_reader.session_start_time) for t in time_data])
+                        else:
+                            relative_time = np.array(list(range(len(stretchmagtec_array)))) * 0.01  # Assume 100Hz
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # x=time, y=magnetic field values - ensure arrays are 1D
+                                mag_data = sensor_data[:, 0]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.x_plot_items:
+                                        self.x_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.x_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.x_plot_items[key] = plot_item
+                        
+                        self.x_plot.setTitle(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.x_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.x_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.x_plot.setTitle("X-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.x_plot.setTitle("X-Axis: Error plotting data")
+            else:
+                self.x_plot.setTitle("X-Axis: Select sensors to plot")
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 1]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    if key in self.y_plot_items:
+                                        self.y_plot_items[key].setData(time_array, mag_data)
+                                    else:
+                                        plot_item = self.y_plot.plot(time_array, mag_data, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.y_plot_items[key] = plot_item
+                        
+                        self.y_plot.setTitle(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.y_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.y_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.y_plot.setTitle("Y-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.y_plot.setTitle("Y-Axis: Error plotting data")
+            else:
+                self.y_plot.setTitle("Y-Axis: Select sensors to plot")
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined - SAME LOGIC AS NON-GPU
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time and time_data:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        # Use 100Hz frequency for time axis (0.01s per sample)
+                        relative_time_trimmed = [i * 0.01 for i in range(len(relative_time_trimmed))]
+                        time_array = np.array(relative_time_trimmed)
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                # Ensure arrays are 1D
+                                mag_data = sensor_data[:, 2]
+                                if len(time_array) == len(mag_data) and len(mag_data) > 0:
+                                    # Convert hex color to RGB tuple for PyQtGraph
+                                    if color.startswith('#'):
+                                        rgb = tuple(int(color[i:i+2], 16) for i in (1, 3, 5))
+                                    else:
+                                        rgb = color
+                                    # Update existing plot item or create new one
+                                    key = f'S{sensor_id+1}'
+                                    # Convert to lists to avoid numpy issues
+                                    time_list = time_array.tolist() if isinstance(time_array, np.ndarray) else list(time_array)
+                                    mag_list = mag_data.tolist() if isinstance(mag_data, np.ndarray) else list(mag_data)
+                                    if key in self.z_plot_items:
+                                        self.z_plot_items[key].setData(time_list, mag_list, autoDownsample=True)
+                                        self.z_plot_items[key].setVisible(True)
+                                    else:
+                                        plot_item = self.z_plot.plot(time_list, mag_list, 
+                                                                    pen=pg.mkPen(rgb, width=3), name=key)
+                                        self.z_plot_items[key] = plot_item
+                                        plot_item.setVisible(True)
+                        
+                        self.z_plot.setTitle(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        # Set fixed Y range for magnetic plots: -30000 to 30000
+                        self.z_plot.setYRange(-30000, 30000, padding=0)
+                        # Auto-range X axis - ensure it starts from 0
+                        if len(relative_time_trimmed) > 0:
+                            x_min = max(0, relative_time_trimmed[0] - 0.1)
+                            x_max = relative_time_trimmed[-1] + 0.1
+                            self.z_plot.setXRange(x_min, x_max, padding=0)
+                    else:
+                        self.z_plot.setTitle("Z-Axis: Waiting for data...")
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.z_plot.setTitle("Z-Axis: Error plotting data")
+            else:
+                self.z_plot.setTitle("Z-Axis: Select sensors to plot")
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def closeEvent(self, event):
+        """Handle window closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        event.accept()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC (GPU ACCELERATED)")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("Using PyQtGraph with OpenGL acceleration")
+    print("="*60)
+    
+    app = QtWidgets.QApplication(sys.argv)
+    window = SensorVisualizationGUI()
+    window.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

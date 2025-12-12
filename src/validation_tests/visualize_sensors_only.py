@@ -1030,3 +1030,646 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+            
+            # Clear all plots (original approach - reliable)
+            self.ax1.clear()
+            self.ax2.clear()
+            self.ax3.clear()
+            self.ax4.clear()
+            
+            # Plot FT data
+            if ft_data and relative_time:
+                ft_array = np.array(ft_data)
+                labels = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+                colors = ['r', 'g', 'b', 'c', 'm', 'y']
+                
+                min_len = min(len(relative_time), len(ft_array))
+                relative_time_trimmed = relative_time[:min_len]
+                ft_array_trimmed = ft_array[:min_len]
+                
+                for i in range(6):
+                    self.ax1.plot(relative_time_trimmed, ft_array_trimmed[:, i], 
+                                label=labels[i], color=colors[i], alpha=0.7)
+                
+                self.ax1.set_title("FT Sensor Data")
+                self.ax1.set_ylabel("Force/Torque")
+                self.ax1.set_xlabel("Time (s)")
+                self.ax1.legend(loc='upper right', fontsize=8)
+                self.ax1.grid(True, alpha=0.3)
+                self.ax1.relim()
+                self.ax1.autoscale_view()
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax2.plot(relative_time_trimmed, sensor_data[:, 0], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax2.set_title(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax2.set_ylabel("Magnetic Field")
+                        self.ax2.set_xlabel("Time (s)")
+                        self.ax2.legend(loc='upper right', fontsize=8)
+                        self.ax2.grid(True, alpha=0.3)
+                        self.ax2.relim()
+                        self.ax2.autoscale_view()
+                    else:
+                        self.ax2.set_title("X-Axis: Waiting for data...")
+                        self.ax2.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax2.set_title("X-Axis: Error plotting data")
+                    self.ax2.grid(True, alpha=0.3)
+            else:
+                self.ax2.set_title("X-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax2.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax2.transAxes, fontsize=10)
+                self.ax2.grid(True, alpha=0.3)
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax3.plot(relative_time_trimmed, sensor_data[:, 1], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax3.set_title(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax3.set_ylabel("Magnetic Field")
+                        self.ax3.set_xlabel("Time (s)")
+                        self.ax3.legend(loc='upper right', fontsize=8)
+                        self.ax3.grid(True, alpha=0.3)
+                        self.ax3.relim()
+                        self.ax3.autoscale_view()
+                    else:
+                        self.ax3.set_title("Y-Axis: Waiting for data...")
+                        self.ax3.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax3.set_title("Y-Axis: Error plotting data")
+                    self.ax3.grid(True, alpha=0.3)
+            else:
+                self.ax3.set_title("Y-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax3.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax3.transAxes, fontsize=10)
+                self.ax3.grid(True, alpha=0.3)
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax4.plot(relative_time_trimmed, sensor_data[:, 2], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax4.set_title(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax4.set_ylabel("Magnetic Field")
+                        self.ax4.set_xlabel("Time (s)")
+                        self.ax4.legend(loc='upper right', fontsize=8)
+                        self.ax4.grid(True, alpha=0.3)
+                        self.ax4.relim()
+                        self.ax4.autoscale_view()
+                    else:
+                        self.ax4.set_title("Z-Axis: Waiting for data...")
+                        self.ax4.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax4.set_title("Z-Axis: Error plotting data")
+                    self.ax4.grid(True, alpha=0.3)
+            else:
+                self.ax4.set_title("Z-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax4.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax4.transAxes, fontsize=10)
+                self.ax4.grid(True, alpha=0.3)
+            
+            # Always update layout and draw
+            self.fig.tight_layout()
+            self.canvas.draw()  # Use draw() to ensure immediate update
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def run(self):
+        """Start the GUI application."""
+        try:
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            self.on_closing()
+    
+    def on_closing(self):
+        """Handle application closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        self.root.quit()
+        self.root.destroy()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("="*60)
+    
+    # Create and run GUI
+    app = SensorVisualizationGUI()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
+
+
+            
+            # Clear all plots (original approach - reliable)
+            self.ax1.clear()
+            self.ax2.clear()
+            self.ax3.clear()
+            self.ax4.clear()
+            
+            # Plot FT data
+            if ft_data and relative_time:
+                ft_array = np.array(ft_data)
+                labels = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+                colors = ['r', 'g', 'b', 'c', 'm', 'y']
+                
+                min_len = min(len(relative_time), len(ft_array))
+                relative_time_trimmed = relative_time[:min_len]
+                ft_array_trimmed = ft_array[:min_len]
+                
+                for i in range(6):
+                    self.ax1.plot(relative_time_trimmed, ft_array_trimmed[:, i], 
+                                label=labels[i], color=colors[i], alpha=0.7)
+                
+                self.ax1.set_title("FT Sensor Data")
+                self.ax1.set_ylabel("Force/Torque")
+                self.ax1.set_xlabel("Time (s)")
+                self.ax1.legend(loc='upper right', fontsize=8)
+                self.ax1.grid(True, alpha=0.3)
+                self.ax1.relim()
+                self.ax1.autoscale_view()
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax2.plot(relative_time_trimmed, sensor_data[:, 0], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax2.set_title(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax2.set_ylabel("Magnetic Field")
+                        self.ax2.set_xlabel("Time (s)")
+                        self.ax2.legend(loc='upper right', fontsize=8)
+                        self.ax2.grid(True, alpha=0.3)
+                        self.ax2.relim()
+                        self.ax2.autoscale_view()
+                    else:
+                        self.ax2.set_title("X-Axis: Waiting for data...")
+                        self.ax2.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax2.set_title("X-Axis: Error plotting data")
+                    self.ax2.grid(True, alpha=0.3)
+            else:
+                self.ax2.set_title("X-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax2.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax2.transAxes, fontsize=10)
+                self.ax2.grid(True, alpha=0.3)
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax3.plot(relative_time_trimmed, sensor_data[:, 1], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax3.set_title(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax3.set_ylabel("Magnetic Field")
+                        self.ax3.set_xlabel("Time (s)")
+                        self.ax3.legend(loc='upper right', fontsize=8)
+                        self.ax3.grid(True, alpha=0.3)
+                        self.ax3.relim()
+                        self.ax3.autoscale_view()
+                    else:
+                        self.ax3.set_title("Y-Axis: Waiting for data...")
+                        self.ax3.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax3.set_title("Y-Axis: Error plotting data")
+                    self.ax3.grid(True, alpha=0.3)
+            else:
+                self.ax3.set_title("Y-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax3.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax3.transAxes, fontsize=10)
+                self.ax3.grid(True, alpha=0.3)
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax4.plot(relative_time_trimmed, sensor_data[:, 2], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax4.set_title(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax4.set_ylabel("Magnetic Field")
+                        self.ax4.set_xlabel("Time (s)")
+                        self.ax4.legend(loc='upper right', fontsize=8)
+                        self.ax4.grid(True, alpha=0.3)
+                        self.ax4.relim()
+                        self.ax4.autoscale_view()
+                    else:
+                        self.ax4.set_title("Z-Axis: Waiting for data...")
+                        self.ax4.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax4.set_title("Z-Axis: Error plotting data")
+                    self.ax4.grid(True, alpha=0.3)
+            else:
+                self.ax4.set_title("Z-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax4.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax4.transAxes, fontsize=10)
+                self.ax4.grid(True, alpha=0.3)
+            
+            # Always update layout and draw
+            self.fig.tight_layout()
+            self.canvas.draw()  # Use draw() to ensure immediate update
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def run(self):
+        """Start the GUI application."""
+        try:
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            self.on_closing()
+    
+    def on_closing(self):
+        """Handle application closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        self.root.quit()
+        self.root.destroy()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("="*60)
+    
+    # Create and run GUI
+    app = SensorVisualizationGUI()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
+
+            
+            # Clear all plots (original approach - reliable)
+            self.ax1.clear()
+            self.ax2.clear()
+            self.ax3.clear()
+            self.ax4.clear()
+            
+            # Plot FT data
+            if ft_data and relative_time:
+                ft_array = np.array(ft_data)
+                labels = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+                colors = ['r', 'g', 'b', 'c', 'm', 'y']
+                
+                min_len = min(len(relative_time), len(ft_array))
+                relative_time_trimmed = relative_time[:min_len]
+                ft_array_trimmed = ft_array[:min_len]
+                
+                for i in range(6):
+                    self.ax1.plot(relative_time_trimmed, ft_array_trimmed[:, i], 
+                                label=labels[i], color=colors[i], alpha=0.7)
+                
+                self.ax1.set_title("FT Sensor Data")
+                self.ax1.set_ylabel("Force/Torque")
+                self.ax1.set_xlabel("Time (s)")
+                self.ax1.legend(loc='upper right', fontsize=8)
+                self.ax1.grid(True, alpha=0.3)
+                self.ax1.relim()
+                self.ax1.autoscale_view()
+            
+            # Plot X-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined even if FT data is missing
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        # Create relative time from stretchmagtec data
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax2.plot(relative_time_trimmed, sensor_data[:, 0], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax2.set_title(f"X-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax2.set_ylabel("Magnetic Field")
+                        self.ax2.set_xlabel("Time (s)")
+                        self.ax2.legend(loc='upper right', fontsize=8)
+                        self.ax2.grid(True, alpha=0.3)
+                        self.ax2.relim()
+                        self.ax2.autoscale_view()
+                    else:
+                        self.ax2.set_title("X-Axis: Waiting for data...")
+                        self.ax2.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting X-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax2.set_title("X-Axis: Error plotting data")
+                    self.ax2.grid(True, alpha=0.3)
+            else:
+                self.ax2.set_title("X-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax2.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax2.transAxes, fontsize=10)
+                self.ax2.grid(True, alpha=0.3)
+            
+            # Plot Y-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax3.plot(relative_time_trimmed, sensor_data[:, 1], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax3.set_title(f"Y-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax3.set_ylabel("Magnetic Field")
+                        self.ax3.set_xlabel("Time (s)")
+                        self.ax3.legend(loc='upper right', fontsize=8)
+                        self.ax3.grid(True, alpha=0.3)
+                        self.ax3.relim()
+                        self.ax3.autoscale_view()
+                    else:
+                        self.ax3.set_title("Y-Axis: Waiting for data...")
+                        self.ax3.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Y-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax3.set_title("Y-Axis: Error plotting data")
+                    self.ax3.grid(True, alpha=0.3)
+            else:
+                self.ax3.set_title("Y-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax3.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax3.transAxes, fontsize=10)
+                self.ax3.grid(True, alpha=0.3)
+            
+            # Plot Z-axis data
+            if stretchmagtec_data and self.selected_sensors:
+                try:
+                    stretchmagtec_array = np.array(stretchmagtec_data)
+                    
+                    # Ensure relative_time is defined
+                    if not relative_time and len(stretchmagtec_array) > 0:
+                        if self.sensor_reader.session_start_time:
+                            relative_time = [(t - self.sensor_reader.session_start_time) for t in time_data]
+                        else:
+                            relative_time = list(range(len(stretchmagtec_array)))
+                    
+                    if len(relative_time) > 0 and len(stretchmagtec_array) > 0:
+                        min_len = min(len(relative_time), len(stretchmagtec_array))
+                        relative_time_trimmed = relative_time[:min_len]
+                        stretchmagtec_array_trimmed = stretchmagtec_array[:min_len]
+                        
+                        for sensor_id in sorted(self.selected_sensors):
+                            if sensor_id < stretchmagtec_array_trimmed.shape[1]:
+                                sensor_data = stretchmagtec_array_trimmed[:, sensor_id, :]
+                                color = self.sensor_colors[sensor_id]
+                                self.ax4.plot(relative_time_trimmed, sensor_data[:, 2], 
+                                            label=f'S{sensor_id+1}', color=color, alpha=0.8, linewidth=2.0)
+                        
+                        self.ax4.set_title(f"Z-Axis: {[f'S{s+1}' for s in sorted(self.selected_sensors)]}")
+                        self.ax4.set_ylabel("Magnetic Field")
+                        self.ax4.set_xlabel("Time (s)")
+                        self.ax4.legend(loc='upper right', fontsize=8)
+                        self.ax4.grid(True, alpha=0.3)
+                        self.ax4.relim()
+                        self.ax4.autoscale_view()
+                    else:
+                        self.ax4.set_title("Z-Axis: Waiting for data...")
+                        self.ax4.grid(True, alpha=0.3)
+                except Exception as e:
+                    print(f"Error plotting Z-axis: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self.ax4.set_title("Z-Axis: Error plotting data")
+                    self.ax4.grid(True, alpha=0.3)
+            else:
+                self.ax4.set_title("Z-Axis: Select sensors to plot")
+                if not self.selected_sensors:
+                    self.ax4.text(0.5, 0.5, 'No sensors selected\nClick sensor buttons', 
+                                ha='center', va='center', transform=self.ax4.transAxes, fontsize=10)
+                self.ax4.grid(True, alpha=0.3)
+            
+            # Always update layout and draw
+            self.fig.tight_layout()
+            self.canvas.draw()  # Use draw() to ensure immediate update
+            
+        except Exception as e:
+            print(f"Plot update error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def run(self):
+        """Start the GUI application."""
+        try:
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            self.on_closing()
+    
+    def on_closing(self):
+        """Handle application closing."""
+        self.update_running = False
+        self.sensor_reader.stop_sensors()
+        self.root.quit()
+        self.root.destroy()
+
+
+def main():
+    """Main function."""
+    print("="*60)
+    print("SENSOR VISUALIZATION - FT & STRETCHMAGTEC")
+    print("="*60)
+    print(f"FT sensor port: {FT_PORT}")
+    print(f"StretchMagTec port: {STRETCHMAGTEC_PORT}")
+    print(f"Sensor configuration: {STRETCHMAGTEC_SENSORS} sensors ({STRETCHMAGTEC_ROWS}x{STRETCHMAGTEC_COLS}) with {STRETCHMAGTEC_CHANNELS} channels each")
+    print("="*60)
+    
+    # Create and run GUI
+    app = SensorVisualizationGUI()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

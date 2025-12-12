@@ -43,7 +43,13 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # SINGLE-POINT CONFIGURATION AND TEST PARAMETERS
 # =============================================================================
 TARGET_POSITION_ID = 32
-TARGET_POSITION_COORDS = [0.495774, 0.440503, 0.034311]  # New center position (already lifted, no additional 5mm needed)
+# New center position from point 1: X,Y from user, Z from previous single point tests
+TARGET_POSITION_COORDS = [0.500781, 0.419620, 0.034311]
+
+# Initial joint configuration (set to None to disable joint movement)
+# To get current joint positions, run: python3 src/franka_controller/get_current_joints.py
+# Then copy the INITIAL_JOINT_POSITIONS value here
+INITIAL_JOINT_POSITIONS = [-1.460883997177473, -1.4397968588005559, 1.8498105422813298, -1.680352194797862, 1.4646542101436189, 1.8593807739681665, 0.8594902150722012]
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
 BASE_EW_OFFSET = 0.0050  # 5.0 mm
@@ -60,22 +66,26 @@ BASE_OFFSETS = {
     'sw': [BASE_NS_OFFSET, -BASE_EW_OFFSET, 0.0],
 }
 
-# Extended offsets (outer ring positions in millimetres converted to metres)
+# Multi-point offsets relative to center (point 1)
+# Pattern: delta X or delta Y of 0.01 m between each point
+# Center (point 1): (0.500781, 0.419620, 0.032812)
 MULTI_POINT_OFFSETS = {
-    '4': [-0.005, 0.011, 0.0],
-    '5': [0.0, 0.011, 0.0],
-    '6': [0.005, 0.011, 0.0],
-    '7': [-0.005, 0.0, 0.0],
-    '9': [0.005, 0.0, 0.0],
-    '10': [-0.005, -0.011, 0.0],
-    '11': [0.0, -0.011, 0.0],
-    '12': [0.005, -0.011, 0.0],
+    '1': [0.0, 0.0, 0.0],           # Center
+    '2': [-0.01, 0.0, 0.0],          # X-0.01
+    '3': [-0.01, 0.01, 0.0],         # X-0.01, Y+0.01
+    '4': [0.0, 0.01, 0.0],           # Y+0.01
+    '5': [0.0, 0.02, 0.0],           # Y+0.02
+    '6': [-0.01, 0.02, 0.0],         # X-0.01, Y+0.02
+    '7': [-0.01, 0.03, 0.0],         # X-0.01, Y+0.03
+    '8': [0.0, 0.03, 0.0],           # Y+0.03
+    '9': [0.0, 0.04, 0.0],           # Y+0.04
+    '10': [-0.01, 0.04, 0.0],        # X-0.01, Y+0.04
 }
 
-TARGET_OFFSETS = ['center', 'nw', 'ne', 'se', 'sw', '4', '5', '6', '7', '9', '10', '11', '12']
+TARGET_OFFSETS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']  # Only the 10 multi-points
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [  0.20]
+STRETCH_LEVELS = [0.20]  # 0%, 10%, 20% stretch
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 
 # Pressing profile configuration (stepwise: 0.5 mm × 5 steps = 2.5 mm)
@@ -84,11 +94,11 @@ PRESS_STEP_MM = PRESS_DEPTH_MM  # Single indentation (no intermediate steps)
 STEPWISE_MODE = False           # Continuous press, single movement
 PRESS_HOLD_S = 1.0              # Hold at maximum indentation before lift
 DWELL_AFTER_LIFT_S = 0.5        # Pause after lift (seconds)
-PRESSES_PER_POINT = 50          # Number of press cycles per offset
+PRESSES_PER_POINT = 33             # Number of press cycles per offset (for testing)
 
 # GUI flag (set False to disable visualization)
 ENABLE_GUI = True
-ENABLE_EXPLORATION = True
+ENABLE_EXPLORATION = False  # Set to False to skip exploration and go directly to data collection
 
 # Base references for restoring configuration after the test
 BASE_DATA_DIR = Path(config.DATA_DIR) / "Multiple_Points"
@@ -100,6 +110,13 @@ config.SELECTED_OFFSETS = TARGET_OFFSETS
 config.MAIN_GRID_POSITIONS[TARGET_POSITION_ID] = TARGET_POSITION_COORDS
 config.GRID_OFFSETS.update(BASE_OFFSETS)
 config.GRID_OFFSETS.update(MULTI_POINT_OFFSETS)
+
+# Set initial joint positions if configured
+if INITIAL_JOINT_POSITIONS is not None:
+    config.INITIAL_JOINT_POSITIONS = INITIAL_JOINT_POSITIONS
+    print(f"Initial joint positions configured: {INITIAL_JOINT_POSITIONS}")
+else:
+    config.INITIAL_JOINT_POSITIONS = None
 
 print("=" * 70)
 print(" MULTI-POINT SKIN TEST (SINGLE PRESS) ")
@@ -305,7 +322,9 @@ def build_offsets_for_stretch(stretch_value: float) -> dict:
         offsets[key] = new_vec
     for key, vec in MULTI_POINT_OFFSETS.items():
         new_vec = list(vec)
-        if key in ('4', '5', '6', '10', '11', '12'):
+        # Apply stretch scaling to Y component for all multi-point offsets (Y direction stretch)
+        # Point 1 (center) doesn't need scaling, but all others do
+        if key != '1':
             new_vec[1] = new_vec[1] * scale
         offsets[key] = new_vec
     return offsets
@@ -759,10 +778,47 @@ def main():
                 print(f"\nCompleted stretch level {stretch_label}. Data stored in {path}")
             else:
                 print(f"\nCompleted stretch level {stretch_label}. (No output file reported)")
+            
+            # Return to initial joint positions between stretch levels (except after the last one)
+            # Note: The robot should already be at initial joint positions after each press,
+            # but we ensure it here as well for consistency
+            if idx < len(STRETCH_LEVELS) - 1 and INITIAL_JOINT_POSITIONS is not None:
+                print(f"\n📍 Ensuring robot is at initial joint positions before next stretch level...")
+                try:
+                    robot = franka.Robot_(config.ROBOT_IP, False, hand_franka=False,
+                                         auto_init=True, speed_factor=config.ROBOT_SPEED_FACTOR)
+                    # Move incrementally in smaller steps to ensure slow, safe movement
+                    import numpy as np
+                    current_state = robot.getState()
+                    current_joints = np.array(current_state.q)
+                    joint_diffs = np.array(INITIAL_JOINT_POSITIONS) - current_joints
+                    max_joint_diff = np.max(np.abs(joint_diffs))
+                    
+                    num_steps = max(10, int(max_joint_diff * 50))  # At least 10 steps
+                    speed_factor = 0.05  # 5% speed for very slow, safe movement
+                    print(f"   Moving in {num_steps} steps with {speed_factor*100}% speed...")
+                    
+                    for step in range(num_steps):
+                        alpha = (step + 1) / num_steps
+                        intermediate_joints = current_joints + alpha * joint_diffs
+                        # Use very low speed_factor (0.05 = 5% speed) for safe, slow movement
+                        robot.move_joints(intermediate_joints.tolist(), speed_factor)  # speed_factor, not duration!
+                        time.sleep(0.2)  # Pause between steps to ensure completion
+                    time.sleep(1.0)  # Wait for stabilization
+                    print("✅ Robot at initial joint positions")
+                    robot.stop()
+                except Exception as e:
+                    print(f"⚠️  Warning: Failed to return to initial joint positions: {e}")
+                    print("   Continuing to next stretch level...")
+            
             time.sleep(2.0)
 
         if collected_files:
-            run_training_pipeline(run_root, run_label)
+            print(f"\n✅ Data collection complete. {len(collected_files)} file(s) collected:")
+            for f in collected_files:
+                print(f"   - {f}")
+            print("\n⚠️  Training pipeline disabled. Run training manually if needed.")
+            # run_training_pipeline(run_root, run_label)  # Disabled to avoid reconnection issues
         else:
             print("\nNo data files were collected; skipping training pipeline.")
 

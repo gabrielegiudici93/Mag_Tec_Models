@@ -51,7 +51,7 @@ TARGET_OFFSETS = ['center', 'nw', 'ne', 'se', 'sw']
 TARGET_POSITION_COORDS = [0.495774, 0.440503, 0.034311]#es; Z increased by 0.5mm (0.0005m)
 
 BASE_NS_OFFSET = 0.0025  # 2.5 mm
-BASE_EW_OFFSET = 0.0050  # 5.0 mm
+BASE_EW_OFFSET = 0.0055  # 5.5 mm
 
 BASE_OFFSETS = {
     'center': [0.0, 0.0, 0.0],
@@ -892,5 +892,3 @@ if __name__ == "__main__":
         print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
         print("  Stopping data collection and GUI...")
         sys.exit(0)
-
-

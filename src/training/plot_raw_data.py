@@ -1667,7 +1667,323 @@ def plot_all_magnetic_channels(sequences: Dict[str, Dict], output_dir: Path, max
 
 if __name__ == "__main__":
     main()
+            offset = seq.get('offset', 'unknown')
+            offset_counts[offset] = offset_counts.get(offset, 0) + 1
+            if len(sequences) <= 10:  # Only print details if few sequences
+                print(f"  {press_id}: {len(seq['indices'])} samples, duration: {duration:.2f}s, Fz range: [{np.min(seq['fz']):.2f}, {np.max(seq['fz']):.2f}] N, offset: {offset}")
+        
+        if len(sequences) > 10:
+            print(f"  ... and {len(sequences) - 10} more sequences")
+        
+        print(f"Sequences per offset: {offset_counts}")
+        
+        if len(sequences) == 0:
+            print("  Warning: No complete sequences found. Skipping plots.")
+            return
+        
+        print("\nGenerating plots...")
+        
+        # Remove 2 outliers per offset before plotting
+        print(f"\nRemoving 2 outliers per offset before plotting...")
+        for offset, seqs in sequences_by_offset.items():
+            if len(seqs) > 2:
+                # Convert sequences to format expected by remove_outliers
+                seqs_dict = []
+                for seq in seqs:
+                    seq_dict = {
+                        'offset': offset,
+                        'duration': seq['time'][-1] - seq['time'][0] if len(seq['time']) > 1 else len(seq['fz']) / 100.0,
+                        'max_fz': float(np.max(seq['fz'])),
+                        'num_samples': len(seq['fz']),
+                        'fz_max': float(np.max(seq['fz'])),
+                    }
+                    seqs_dict.append(seq_dict)
+                
+                # Remove outliers
+                cleaned_seqs_dict, outlier_indices = remove_outliers(seqs_dict, z_threshold=3.0, remove_per_offset=2)
+                if outlier_indices:
+                    # Remove corresponding sequences
+                    cleaned_seqs = [seq for i, seq in enumerate(seqs) if i not in outlier_indices]
+                    sequences_by_offset[offset] = cleaned_seqs
+                    print(f"  Offset {offset}: Removed {len(outlier_indices)} outliers, {len(seqs)} -> {len(cleaned_seqs)} sequences")
+        
+        # Extract stretch label from filename or file attributes
+        stretch_label = "unknown"
+        if "000pct" in args.h5_file.name or "stretch_0" in args.h5_file.name:
+            stretch_label = "0%"
+        elif "010pct" in args.h5_file.name or "stretch_10" in args.h5_file.name:
+            stretch_label = "10%"
+        elif "020pct" in args.h5_file.name or "stretch_20" in args.h5_file.name:
+            stretch_label = "20%"
+        
+        # Try to get from file attributes
+        try:
+            with h5py.File(args.h5_file, 'r') as hf:
+                if 'stretch_label' in hf.attrs:
+                    stretch_label = hf.attrs['stretch_label'].decode('utf-8') if isinstance(hf.attrs['stretch_label'], bytes) else str(hf.attrs['stretch_label'])
+        except:
+            pass
+        
+        # Plot sequences by offset (separate plot for each of the 5 positions)
+        print(f"\nGenerating plots for each offset point (5 separate plots)...")
+        plot_sequences_by_offset(sequences_by_offset, args.output_dir, stretch_label)
+        
+        # Plot mean and std deviation for each position
+        print(f"\nGenerating mean/std plots for each offset point...")
+        plot_mean_std_by_position(sequences_by_offset, args.output_dir, stretch_label)
+        
+        # Plot all sequences
+        plot_all_sequences(sequences, args.output_dir / "raw_data_all_sequences.png", max_sequences=50)
+        
+        # Plot single sequence (first continuous press sequence found)
+        if len(sequences) > 0:
+            plot_single_sequence(sequences, args.output_dir / "raw_data_single_sequence.png")
+            
+            # Plot Fz FT vs Magnetic sensor channel 8
+            plot_fz_ft_vs_magnetic(sequences, args.output_dir / "raw_data_fz_ft_vs_magnetic_ch8.png")
+            
+            # Plot only Magnetic sensor channel 8
+            plot_magnetic_only(sequences, args.output_dir / "raw_data_magnetic_ch8_only.png")
+        
+        # Plot all sequences of magnetic sensor channel 8
+        plot_all_magnetic_sequences(sequences, args.output_dir / "raw_data_magnetic_ch8_all_sequences.png")
+        
+        # Plot each magnetic sensor channel separately
+        plot_all_magnetic_channels(sequences, args.output_dir)
+        
+        # Summary statistics
+        if len(sequences) > 0:
+            plot_summary_statistics(sequences, args.output_dir / "raw_data_summary.png")
+    
+    print(f"\nAll plots saved to: {args.output_dir}")
 
+def plot_fz_ft_vs_magnetic(sequences: Dict[str, Dict], output_path: Path, press_id: str = None):
+    """Plot Fz from FT sensor vs magnetic sensor channel 8 (absolute value, first sequence only)."""
+    if press_id is None:
+        # Use the first sequence (sorted by key)
+        press_id = sorted(sequences.keys())[0]
+    
+    if press_id not in sequences:
+        print(f"  Warning: Press ID '{press_id}' not found, using first available")
+        press_id = sorted(sequences.keys())[0]
+    
+    seq = sequences[press_id]
+    
+    if 'mag_ch8_z' not in seq:
+        print(f"  Warning: Magnetic sensor data not available for {press_id}")
+        return
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Plot Fz from FT sensor on left y-axis (N) - USE ABSOLUTE VALUE
+    fz_abs = np.abs(seq['fz'])
+    ax.plot(seq['time'], fz_abs, 'b-', linewidth=2, label='Fz FT Sensor |Fz|', alpha=0.8)
+    ax.set_xlabel('Time (s)', fontsize=12)
+    ax.set_ylabel('Fz FT Sensor |Fz| (N)', fontsize=12, color='b')
+    ax.tick_params(axis='y', labelcolor='b')
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='b', linestyle='--', linewidth=0.5, alpha=0.5)
+    
+    # Plot magnetic sensor channel 8, Z component on right y-axis (digits) - USE ABSOLUTE VALUE
+    mag_ch8_abs = np.abs(seq['mag_ch8_z'])
+    ax2 = ax.twinx()
+    ax2.plot(seq['time'], mag_ch8_abs, 'r-', linewidth=2, label='Magnetic Sensor Ch8 |Z|', alpha=0.8)
+    ax2.set_ylabel('Magnetic Sensor Ch8 |Z| [digits]', fontsize=12, color='r')
+    ax2.tick_params(axis='y', labelcolor='r')
+    ax2.axhline(y=0, color='r', linestyle='--', linewidth=0.5, alpha=0.5)
+    
+    # Combine legends
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=11)
+    
+    ax.set_title(f'Fz FT Sensor |Fz| (N) vs Magnetic Sensor Channel 8 |Z| [digits] - First Sequence: {press_id}', fontsize=14, fontweight='bold')
+    
+    # Add text box with statistics
+    stats_text = f"""Statistics (First Sequence):
+Samples: {len(seq['indices'])}
+Duration: {seq['time'][-1] - seq['time'][0]:.2f} s
+Fz FT |Fz| range: [{np.min(fz_abs):.2f}, {np.max(fz_abs):.2f}] N
+Fz FT |Fz| mean: {np.mean(fz_abs):.2f} N
+Mag Ch8 |Z| range: [{np.min(mag_ch8_abs):.2f}, {np.max(mag_ch8_abs):.2f}]
+Mag Ch8 |Z| mean: {np.mean(mag_ch8_abs):.2f}"""
+    
+    fig.text(0.02, 0.02, stats_text, fontsize=9, verticalalignment='bottom',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {output_path.name} (First Sequence: {press_id}, using |Z|)")
 
+def plot_magnetic_only(sequences: Dict[str, Dict], output_path: Path, press_id: str = None):
+    """Plot only magnetic sensor channel 8 (Z component)."""
+    if press_id is None:
+        # Find first sequence that looks like a continuous press (not lift, start, etc.)
+        candidate_ids = [pid for pid in sorted(sequences.keys()) 
+                        if not any(x in pid.lower() for x in ['lift', 'start', 'controlled'])]
+        if candidate_ids:
+            press_id = candidate_ids[0]
+        else:
+            press_id = sorted(sequences.keys())[0]
+    
+    if press_id not in sequences:
+        print(f"  Warning: Press ID '{press_id}' not found, using first available")
+        press_id = sorted(sequences.keys())[0]
+    
+    seq = sequences[press_id]
+    
+    if 'mag_ch8_z' not in seq:
+        print(f"  Warning: Magnetic sensor data not available for {press_id}")
+        return
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Plot magnetic sensor channel 8, Z component
+    ax.plot(seq['time'], seq['mag_ch8_z'], 'r-', linewidth=2, label='Magnetic Sensor Ch8 (Z)', alpha=0.8)
+    
+    ax.set_xlabel('Time (s)', fontsize=12)
+    ax.set_ylabel('Magnetic Sensor Ch8 (Z) [digits]', fontsize=12)
+    ax.set_title(f'Magnetic Sensor Channel 8 (Z) - Sequence: {press_id}', fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
+    
+    # Add text box with statistics
+    stats_text = f"""Statistics:
+Samples: {len(seq['indices'])}
+Duration: {seq['time'][-1] - seq['time'][0]:.2f} s
+Mag Ch8 Z range: [{np.min(seq['mag_ch8_z']):.2f}, {np.max(seq['mag_ch8_z']):.2f}] digits
+Mag Ch8 Z mean: {np.mean(seq['mag_ch8_z']):.2f} digits
+Mag Ch8 Z std: {np.std(seq['mag_ch8_z']):.2f} digits"""
+    
+    fig.text(0.02, 0.02, stats_text, fontsize=9, verticalalignment='bottom',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {output_path.name} (Press ID: {press_id})")
 
+def plot_all_magnetic_sequences(sequences: Dict[str, Dict], output_path: Path, max_sequences: int = 50):
+    """Plot all sequences of magnetic sensor channel 8 (Z component) overlapped, all starting from 0s."""
+    # Filter sequences that have magnetic data
+    sequences_with_mag = {pid: seq for pid, seq in sequences.items() if 'mag_ch8_z' in seq}
+    
+    if not sequences_with_mag:
+        print("  Warning: No sequences with magnetic sensor data found")
+        return
+    
+    # Sort by press_id for consistent ordering
+    sorted_press_ids = sorted(sequences_with_mag.keys())
+    
+    # Limit number of sequences to plot
+    if len(sorted_press_ids) > max_sequences:
+        print(f"  Plotting first {max_sequences} sequences (out of {len(sorted_press_ids)})")
+        sorted_press_ids = sorted_press_ids[:max_sequences]
+    
+    n_sequences = len(sorted_press_ids)
+    if n_sequences == 0:
+        print("  Warning: No sequences to plot")
+        return
+    
+    fig, ax = plt.subplots(figsize=(16, 10))
+    
+    colors = plt.cm.tab20(np.linspace(0, 1, min(n_sequences, 20)))
+    
+    for i, press_id in enumerate(sorted_press_ids):
+        seq = sequences_with_mag[press_id]
+        color = colors[i % len(colors)]
+        ax.plot(seq['time'], seq['mag_ch8_z'], 
+                label=f"{press_id} ({len(seq['indices'])} samples)", 
+                color=color, alpha=0.7, linewidth=1.5)
+    
+    ax.set_xlabel('Time (s)', fontsize=12)
+    ax.set_ylabel('Magnetic Sensor Ch8 (Z) [digits]', fontsize=12)
+    ax.set_title(f'Magnetic Sensor Channel 8 (Z) - All Sequences Overlapped ({n_sequences} sequences)', fontsize=14)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=1)
+    ax.grid(True, alpha=0.3)
+    ax.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {output_path.name} ({n_sequences} sequences)")
 
+def plot_all_magnetic_channels(sequences: Dict[str, Dict], output_dir: Path, max_sequences: int = 50):
+    """Plot all sequences for each magnetic sensor channel (0-14), overlapped like FT plots."""
+    # Filter sequences that have magnetic data
+    sequences_with_mag = {pid: seq for pid, seq in sequences.items() if 'mag_all_channels' in seq}
+    
+    if not sequences_with_mag:
+        print("  Warning: No sequences with magnetic sensor data found")
+        return
+    
+    # Get number of channels (should be 15)
+    first_seq = list(sequences_with_mag.values())[0]
+    n_channels = first_seq['mag_all_channels'].shape[1]  # Should be 15
+    
+    print(f"  Generating plots for {n_channels} magnetic sensor channels...")
+    
+    # Sort by press_id for consistent ordering
+    sorted_press_ids = sorted(sequences_with_mag.keys())
+    
+    # Limit number of sequences to plot
+    if len(sorted_press_ids) > max_sequences:
+        print(f"  Plotting first {max_sequences} sequences (out of {len(sorted_press_ids)})")
+        sorted_press_ids = sorted_press_ids[:max_sequences]
+    
+    # Calculate max duration across all sequences for x-axis limit
+    max_duration = 0
+    for press_id in sorted_press_ids:
+        seq = sequences_with_mag[press_id]
+        if len(seq['time']) > 0:
+            max_duration = max(max_duration, seq['time'][-1])
+    
+    # Color palette for different sequences
+    colors = plt.cm.tab10(np.linspace(0, 1, len(sorted_press_ids)))
+    
+    # Create a plot for each channel
+    for ch in range(n_channels):
+        # Create figure with 3 subplots (X, Y, Z) side by side
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharex=True)
+        
+        # Plot all sequences overlapped for each component (X, Y, Z)
+        for comp_idx, (comp_name, ax) in enumerate(zip(['X', 'Y', 'Z'], axes)):
+            for seq_idx, press_id in enumerate(sorted_press_ids):
+                seq = sequences_with_mag[press_id]
+                color = colors[seq_idx % len(colors)]
+                
+                # Check if sequence starts from 0s
+                if len(seq['time']) > 0 and abs(seq['time'][0]) > 0.01:
+                    print(f"    Warning: Sequence {press_id} does not start from 0s (starts at {seq['time'][0]:.3f}s)")
+                
+                # Plot sequence - all should start from 0s
+                mag_data = seq['mag_all_channels'][:, ch, comp_idx]  # [samples] for channel ch, component comp_idx
+                ax.plot(seq['time'], mag_data, 
+                       label=f"{press_id}" if comp_idx == 0 and seq_idx < 10 else "", 
+                       color=color, alpha=0.7, linewidth=1.5)
+            
+            ax.set_ylabel(f'{comp_name} [digits]', fontsize=12)
+            ax.set_title(f'Channel {ch+1} - {comp_name} Component', fontsize=12)
+            if comp_idx == 0:
+                ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=1)
+            ax.grid(True, alpha=0.3)
+            ax.axhline(y=0, color='k', linestyle='--', linewidth=0.5)
+            # Set x-axis limit to show all sequences clearly overlapped
+            ax.set_xlim(0, max_duration * 1.05)  # Add 5% margin
+            ax.set_xlabel('Time (s)', fontsize=11)
+        
+        plt.suptitle(f'Magnetic Sensor Channel {ch+1} - All Sequences Overlapped ({len(sorted_press_ids)} sequences)', 
+                    fontsize=14, y=0.995)
+        plt.tight_layout()
+        
+        output_path = output_dir / f"raw_data_magnetic_ch{ch+1}_all_sequences.png"
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"    Saved: {output_path.name}")
+    
+    print(f"  Generated {n_channels} plots (one per channel)")
+
+if __name__ == "__main__":
+    main()
