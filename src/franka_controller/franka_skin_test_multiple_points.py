@@ -44,7 +44,7 @@ import validation_tests.real_time_predictor as predictor  # noqa: E402
 # =============================================================================
 TARGET_POSITION_ID = 32
 # New center position from point 1: X,Y from user, Z from previous single point tests
-TARGET_POSITION_COORDS = [0.500781, 0.419620, 0.034311]
+TARGET_POSITION_COORDS = [0.500781, 0.419620, 0.032311]
 
 # Initial joint configuration (set to None to disable joint movement)
 # To get current joint positions, run: python3 src/franka_controller/get_current_joints.py
@@ -82,10 +82,10 @@ MULTI_POINT_OFFSETS = {
     '10': [-0.01, 0.04, 0.0],        # X-0.01, Y+0.04
 }
 
-TARGET_OFFSETS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']  # Only the 10 multi-points
+TARGET_OFFSETS = ['no_touch', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10']  # No-touch first, then 10 multi-points
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [0.20]  # 0%, 10%, 20% stretch
+STRETCH_LEVELS = [0.10]  # 0% stretch (will collect 10% and 20% later)
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 
 # Pressing profile configuration (stepwise: 0.5 mm × 5 steps = 2.5 mm)
@@ -98,6 +98,9 @@ PRESSES_PER_POINT = 33             # Number of press cycles per offset (for test
 
 # GUI flag (set False to disable visualization)
 ENABLE_GUI = True
+
+# No-touch data collection (treated as a point, collected before point 1)
+NO_TOUCH_SEQUENCE_DURATION = 4.0  # Duration of each no-touch sequence in seconds
 ENABLE_EXPLORATION = False  # Set to False to skip exploration and go directly to data collection
 
 # Base references for restoring configuration after the test
@@ -315,6 +318,8 @@ def format_stretch_label(stretch_value: float) -> str:
 def build_offsets_for_stretch(stretch_value: float) -> dict:
     scale = 1.0 + stretch_value
     offsets = {}
+    # Add no_touch offset (no offset, robot stays in place)
+    offsets['no_touch'] = [0.0, 0.0, 0.0]
     for key, vec in BASE_OFFSETS.items():
         new_vec = list(vec)
         if key in ('e', 'w', 'ne', 'nw', 'se', 'sw'):
@@ -525,6 +530,7 @@ def configure_for_stretch(stretch_value: float, stretch_label: str, run_root: Pa
     config.CURRENT_STRETCH_VALUE = stretch_value
     config.CURRENT_STRETCH_LABEL = stretch_label
     config.CURRENT_PRESS_PROFILE = press_profile
+    config.NO_TOUCH_SEQUENCE_DURATION = NO_TOUCH_SEQUENCE_DURATION  # Pass no-touch sequence duration to franka_skin_test
     config.CURRENT_PRESS_SETTINGS = {
         "press_depth_mm": PRESS_DEPTH_MM,
         "press_step_mm": PRESS_STEP_MM,

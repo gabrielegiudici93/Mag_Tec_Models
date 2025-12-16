@@ -293,9 +293,9 @@ class FTSensorThread(threading.Thread):
             ft300 = None
             for attempt in range(max_retries):
                 try:
-            ft300 = mm.Instrument(self.port, slaveaddress=9)
-            ft300.close_port_after_each_call = True
-            ft300.write_register(410, 0x0200)
+                    ft300 = mm.Instrument(self.port, slaveaddress=9)
+                    ft300.close_port_after_each_call = True
+                    ft300.write_register(410, 0x0200)
                     break  # Success, exit retry loop
                 except Exception as e:
                     if attempt < max_retries - 1:
@@ -312,7 +312,7 @@ class FTSensorThread(threading.Thread):
                         print(f"[FT Thread] ⚠️  MinimalModbus initialization failed after {max_retries} attempts: {e}")
                         print(f"[FT Thread] Continuing anyway - sensor may still work in streaming mode")
             if ft300:
-            del ft300
+                del ft300
             ser = serial.Serial(port=self.port, baudrate=self.baudrate, bytesize=8, parity='N', stopbits=1, timeout=1)
             STARTBYTES = bytes([0x20, 0x4e])
             ser.read_until(STARTBYTES)
@@ -328,28 +328,28 @@ class FTSensorThread(threading.Thread):
             
             while self.running:
                 try:
-                data = ser.read_until(STARTBYTES)
-                dataArray = bytearray(data)
-                dataArray = STARTBYTES + dataArray[:-2]
-                if not crcCheck(dataArray):
+                    data = ser.read_until(STARTBYTES)
+                    dataArray = bytearray(data)
+                    dataArray = STARTBYTES + dataArray[:-2]
+                    if not crcCheck(dataArray):
                         consecutive_errors += 1
                         if consecutive_errors >= max_consecutive_errors:
                             print(f"[FT Thread] ⚠️  Too many CRC errors ({consecutive_errors}), sensor may be disconnected")
-                    continue
+                        continue
                     
                     # Reset error counter on successful read
                     consecutive_errors = 0
                     
-                raw_force = forceFromSerialMessage(dataArray, zeroRef)
-                
+                    raw_force = forceFromSerialMessage(dataArray, zeroRef)
+                    
                     # Store raw values (not filtered) for GUI display
                     # Filtering is only for noise reduction in plots, but GUI should show actual values
-                with self.lock:
+                    with self.lock:
                         self.raw_force_reading = raw_force.copy()  # Store raw (unfiltered) for GUI
                         # Apply noise threshold for compensated reading (used in logging)
                         ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in raw_force]
-                    self.force_reading = ft_calibration.compensate_force(ft_cleaned)
-                ft_data_ready_event.set()
+                        self.force_reading = ft_calibration.compensate_force(ft_cleaned)
+                    ft_data_ready_event.set()
                     
                 except serial.SerialTimeoutException:
                     # Timeout is normal if no data available, just continue
@@ -492,6 +492,13 @@ def parse_stretchmagtec_line(line):
                     sensor_values[i, 1] = coords['Y'] 
                     sensor_values[i, 2] = coords['Z']
         
+        # Check for saturation values (65535 or close to it) - these indicate corrupted data
+        # Typical valid sensor values are in range -50000 to 50000, saturation is 65535
+        SATURATION_THRESHOLD = 60000  # Values above this are likely saturation/corruption
+        if np.any(np.abs(sensor_values) > SATURATION_THRESHOLD):
+            # If any sensor shows saturation, reject the entire reading
+            return None
+        
         # Apply threshold filter
         sensor_values[(sensor_values >= -STRETCHMAGTEC_THRESHOLD) & (sensor_values <= STRETCHMAGTEC_THRESHOLD)] = 0
         return sensor_values
@@ -602,6 +609,26 @@ class StretchMagTecSerialReader(threading.Thread):
             
             self.ser = serial.Serial(self.port, self.baud, timeout=1)
             time.sleep(2)  # Wait for Arduino to initialize
+            
+            # Flush any existing data in the buffer to avoid reading stale/corrupted data
+            # This prevents saturation values (65535) from old data
+            self.ser.reset_input_buffer()
+            
+            # Read and discard first few lines after flush to ensure we get fresh data
+            # This is critical to avoid reading corrupted/saturated values
+            print(f"✅ StretchMagTec sensor connected to {self.port} at {self.baud} baud (flushing initial data)...")
+            for _ in range(10):  # Discard first 10 lines
+                try:
+                    if self.ser.in_waiting > 0:
+                        self.ser.readline()  # Read and discard
+                except:
+                    pass
+                time.sleep(0.1)  # Small delay between reads
+            
+            # Final flush to ensure clean buffer
+            self.ser.reset_input_buffer()
+            print(f"✅ Buffer flushed and initial data discarded. Starting data collection...")
+            
             while self.running and not shutdown_requested:
                 if self.ser.in_waiting > 0:
                     line = self.ser.readline().decode('utf-8', errors='ignore').strip()
@@ -665,11 +692,11 @@ class StretchMagTecSerialReader(threading.Thread):
                         # Only update data if not an outlier and not shutting down
                         if not is_outlier and not shutdown_requested:
                             # Minimize lock time - only copy data, do heavy operations outside lock
-                        with stretchmagtec_data_lock:
+                            with stretchmagtec_data_lock:
                                 stretchmagtec_data[:, :] = filtered_values
                             # Update last_valid outside lock to avoid blocking
                             self.last_valid = filtered_values.copy()
-                        stretchmagtec_ready_event.set()
+                            stretchmagtec_ready_event.set()
                 
                 # Small sleep to avoid CPU spinning, but check shutdown
                 if shutdown_requested:
@@ -709,7 +736,23 @@ class StretchMagTecSerialReader(threading.Thread):
                         # Try to open the new port
                         self.ser = serial.Serial(self.port, self.baud, timeout=1)
                         time.sleep(2)  # Wait for Arduino to initialize
-                        print(f"✅ Port {self.port} connected successfully! Continuing...")
+                        
+                        # Flush any existing data in the buffer to avoid reading stale/corrupted data
+                        self.ser.reset_input_buffer()
+                        
+                        # Read and discard first few lines after flush to ensure we get fresh data
+                        for _ in range(10):  # Discard first 10 lines
+                            try:
+                                if self.ser.in_waiting > 0:
+                                    self.ser.readline()  # Read and discard
+                            except:
+                                pass
+                            time.sleep(0.1)  # Small delay between reads
+                        
+                        # Final flush to ensure clean buffer
+                        self.ser.reset_input_buffer()
+                        
+                        print(f"✅ Port {self.port} connected successfully! Continuing... (buffer flushed and initial data discarded)")
                         stretchmagtec_ready_event.set()
                         # Continue with normal reading loop
                         while self.running and not shutdown_requested:
@@ -804,7 +847,23 @@ class StretchMagTecSerialReader(threading.Thread):
                                         self.ser.close()
                                     self.ser = serial.Serial(self.port, self.baud, timeout=1)
                                     time.sleep(2)
-                                    print(f"✅ Port {self.port} connected successfully! Continuing...")
+                                    
+                                    # Flush any existing data in the buffer to avoid reading stale/corrupted data
+                                    self.ser.reset_input_buffer()
+                                    
+                                    # Read and discard first few lines after flush to ensure we get fresh data
+                                    for _ in range(10):  # Discard first 10 lines
+                                        try:
+                                            if self.ser.in_waiting > 0:
+                                                self.ser.readline()  # Read and discard
+                                        except:
+                                            pass
+                                        time.sleep(0.1)  # Small delay between reads
+                                    
+                                    # Final flush to ensure clean buffer
+                                    self.ser.reset_input_buffer()
+                                    
+                                    print(f"✅ Port {self.port} connected successfully! Continuing... (buffer flushed and initial data discarded)")
                                     stretchmagtec_ready_event.set()
                                     connection_restored = True
                                     # Restart reading loop (same as above)
@@ -880,7 +939,7 @@ class StretchMagTecSerialReader(threading.Thread):
                         while self.running:
                             time.sleep(1.0)
             else:
-            print(f"StretchMagTec serial error: {e}")
+                print(f"StretchMagTec serial error: {e}")
         finally:
             if self.ser:
                 self.ser.close()
@@ -1113,8 +1172,8 @@ def main():
     max_connection_retries = 5
     for attempt in range(max_connection_retries):
         try:
-    r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
-    print("Robot connected successfully")
+            r = franka.Robot_(ROBOT_IP, False, hand_franka=False, auto_init=True, speed_factor=ROBOT_SPEED_FACTOR)
+            print("Robot connected successfully")
             break  # Success, exit retry loop
         except KeyboardInterrupt:
             raise  # Re-raise to be caught by outer handler
@@ -1240,23 +1299,9 @@ def main():
     print("="*70)
     
     # Wait for sensor to start streaming
-        print("Waiting for StretchMagTec stream to stabilize...")
-        if not stretchmagtec_ready_event.wait(timeout=STRETCHMAGTEC_STREAM_TIMEOUT):
+    print("Waiting for StretchMagTec stream to stabilize...")
+    if not stretchmagtec_ready_event.wait(timeout=STRETCHMAGTEC_STREAM_TIMEOUT):
         print("\n" + "="*70)
-        print("❌ CRITICAL: StretchMagTec sensor did not start streaming in time.")
-        print("="*70)
-        print("Possible causes:")
-        print("  1. Port does not exist (check with: ls -l /dev/tty*)")
-        print("  2. Cable not connected or loose")
-        print("  3. Device not powered on")
-        print("  4. Wrong port configured in config.py")
-        print("\nPlease:")
-        print("  1. Check the magnetic sensor cable connection")
-        print("  2. Ensure the device is powered on")
-        print("  3. Check available ports: ls -l /dev/tty*")
-        print("  4. Update STRETCHMAGTEC_PORT in config.py if needed")
-        print("  5. Restart the script after fixing the connection")
-        raise RuntimeError("StretchMagTec sensor did not start streaming in time. Check hardware connection.")
         print("❌ CRITICAL: StretchMagTec sensor did not start streaming in time.")
         print("="*70)
         print("Possible causes:")
@@ -1273,7 +1318,7 @@ def main():
         raise RuntimeError("StretchMagTec sensor did not start streaming in time. Check hardware connection.")
     
     print(f"StretchMagTec stream detected. Waiting {STRETCHMAGTEC_STREAM_STABILIZATION:.1f} seconds for stabilization...")
-        time.sleep(STRETCHMAGTEC_STREAM_STABILIZATION)
+    time.sleep(STRETCHMAGTEC_STREAM_STABILIZATION)
     
     # Check if sensor is reading valid data (not all zeros)
     max_check_attempts = 10
@@ -1380,16 +1425,16 @@ def main():
     # Start continuous logger
     logger = None
     try:
-    logger = ContinuousLoggerThread(r, ft_thread)
-    logger.daemon = True
-    logger.start()
+        logger = ContinuousLoggerThread(r, ft_thread)
+        logger.daemon = True
+        logger.start()
     except KeyboardInterrupt:
         raise  # Re-raise to be caught by outer handler
 
     try:
         # Determine which positions to test from config (already done above, but get offsets)
         if not position_ids_to_test:
-        position_ids_to_test = get_positions_to_test()
+            position_ids_to_test = get_positions_to_test()
         offsets_to_test = get_offsets_to_test()
         
         all_position_ids = sorted(MAIN_GRID_POSITIONS.keys())
@@ -1430,13 +1475,16 @@ def main():
             # Iterate through selected offsets
             # IMPORTANT: Sort offsets to ensure consistent order (especially for multi-point offsets '1', '2', ..., '10')
             # Try to sort numerically if possible, otherwise alphabetically
+            # 'no_touch' should always come first
             def sort_key(offset):
+                if offset == 'no_touch':
+                    return (0, 'no_touch')  # Tuple with 0 as first element to ensure it's first
                 try:
                     # Try to convert to int for numeric sorting (e.g., '1', '2', ..., '10')
-                    return int(offset)
+                    return (1, int(offset))  # Tuple with 1 as first element for numeric offsets
                 except ValueError:
                     # If not numeric, use alphabetical order
-                    return offset
+                    return (2, offset)  # Tuple with 2 as first element for other string offsets
             
             sorted_offsets = sorted(offsets_to_test, key=sort_key)
             offset_count = 0
@@ -1479,6 +1527,67 @@ def main():
                             print(f"⚠️  Warning: Failed to move to initial joint configuration: {e}")
                             print("   Continuing with cartesian movement...")
                 
+                # Handle no_touch offset: collect data without robot movement
+                if offset_key == 'no_touch':
+                    print(f"\n{'='*70}")
+                    print(f"NO-TOUCH DATA COLLECTION")
+                    print(f"{'='*70}")
+                    print(f"Collecting {NUMBER_OF_PRESSES} sequences of {getattr(config_module, 'NO_TOUCH_SEQUENCE_DURATION', 4.0)} seconds each")
+                    print(f"Robot will NOT move - staying at current position")
+                    print(f"{'='*70}\n")
+                    
+                    # Get current position (robot stays here)
+                    current_state = r.getState()
+                    current_position = current_state.T[:3, 3].copy()
+                    print(f"Current robot position: X={current_position[0]:.6f}m, Y={current_position[1]:.6f}m, Z={current_position[2]:.6f}m")
+                    
+                    # Wait for stabilization
+                    time.sleep(1.0)
+                    
+                    # Collect no-touch sequences
+                    no_touch_sequence_duration = getattr(config_module, 'NO_TOUCH_SEQUENCE_DURATION', 4.0)
+                    successful_presses = 0
+                    press_attempt = 0
+                    
+                    while successful_presses < NUMBER_OF_PRESSES:
+                        if shutdown_requested:
+                            print("\n⚠️  Shutdown requested - stopping no-touch collection")
+                            raise KeyboardInterrupt
+                        
+                        press_attempt += 1
+                        press_id = PRESS_IDS[successful_presses]
+                        skip_first_press = (successful_presses == 0)
+                        
+                        if skip_first_press:
+                            print(f"Starting no-touch sequence {successful_presses + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}) - DISCARDING (first sequence)")
+                        else:
+                            print(f"Starting no-touch sequence {successful_presses + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id})")
+                        
+                        # Set label for sequence start (logger will automatically record data)
+                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_start")
+                        
+                        # Wait for fixed duration (logger continues recording in background)
+                        # The logger thread automatically records at TARGET_FREQ
+                        time.sleep(no_touch_sequence_duration)
+                        
+                        # Set label for sequence end
+                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_sequence_end")
+                        
+                        # Calculate expected number of samples
+                        expected_samples = int(no_touch_sequence_duration * TARGET_FREQ)
+                        if skip_first_press:
+                            print(f"  Discarded sequence (first sequence, ~{expected_samples} samples)")
+                        else:
+                            print(f"  Recorded sequence (~{expected_samples} samples, {no_touch_sequence_duration:.1f}s)")
+                        
+                        successful_presses += 1
+                        time.sleep(0.5)  # Brief pause between sequences
+                    
+                    # After all no-touch sequences, continue to next offset
+                    print(f"\n✅ Completed {NUMBER_OF_PRESSES} no-touch sequences for offset {offset_key}")
+                    continue  # Skip the normal press loop for no_touch
+                
+                # Normal offset handling (for all other offsets)
                 # Get position coordinates with offset
                 desired_position = get_position_with_offset(base_position, offset_key)
                 
@@ -1557,19 +1666,19 @@ def main():
                             if press_retry > 0:
                                 print(f"\n🔄 Retrying press {press_id} (attempt {press_retry + 1}/{max_press_retries})...")
                             
-                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
-                    
+                            logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_start")
+                            
                             if skip_first_press:
                                 print(f"Starting press cycle {successful_presses + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}, Attempt: {press_attempt}) - DISCARDING (first press)")
                             else:
                                 print(f"Starting press cycle {successful_presses + 1}/{NUMBER_OF_PRESSES} (Press ID: {press_id}, Attempt: {press_attempt})")
-                    
-                    # Calibrate before press (optional, per-position calibration)
-                    if FT_PER_POSITION_CALIBRATION_ENABLED:
-                        ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
-                    if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
-                        stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
-                    
+                            
+                            # Calibrate before press (optional, per-position calibration)
+                            if FT_PER_POSITION_CALIBRATION_ENABLED:
+                                ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
+                            if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
+                                stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_pre-press_{press_id}")
+                            
                             # Perform force-controlled press: stop at 1.0N to 3.0N in 0.1N steps for 1s each
                             # OR position-controlled press (if FORCE_CONTROLLED_PRESS is False)
                             if getattr(config_module, "FORCE_CONTROLLED_PRESS", False):
@@ -1755,42 +1864,42 @@ def main():
                                 time.sleep(LIFT_DELAY)
                             else:
                                 # Original position-controlled pressing
-                    for step_num in range(STEPS_PER_PRESS):
-                        logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
-                        move_relative(r, 0, 0, DZ_PRESS)
-                        print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
-                        time.sleep(PRESS_DELAY)
+                                for step_num in range(STEPS_PER_PRESS):
+                                    logger.set_label(f"pos_{position_id}_{offset_key}_press_{press_id}_step_{step_num+1}")
+                                    move_relative(r, 0, 0, DZ_PRESS)
+                                    print(f"Press {press_id}, Step {step_num + 1}/{STEPS_PER_PRESS} - Moving down by {abs(DZ_PRESS)}m")
+                                    time.sleep(PRESS_DELAY)
 
-                    # Capture press snapshot before lifting
-                    with stretchmagtec_data_lock:
-                        sensor_snapshot = stretchmagtec_data.copy()
-                    ft_snapshot = ft_thread.get_ft()
-                    summary_meta = {
-                        "position_id": int(position_id),
-                        "offset_key": offset_key,
-                        "press_id": press_id,
+                            # Capture press snapshot before lifting
+                            with stretchmagtec_data_lock:
+                                sensor_snapshot = stretchmagtec_data.copy()
+                            ft_snapshot = ft_thread.get_ft()
+                            summary_meta = {
+                                "position_id": int(position_id),
+                                "offset_key": offset_key,
+                                "press_id": press_id,
                                 "press_index": successful_presses,
-                        "timestamp": datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3],
-                        "stretch_level": float(getattr(config_module, "CURRENT_STRETCH_VALUE", 0.0)),
-                        "stretch_label": str(getattr(config_module, "CURRENT_STRETCH_LABEL", "")),
-                        "press_profile": str(getattr(config_module, "CURRENT_PRESS_PROFILE", "")),
-                        "press_depth_m": float(abs(DZ_PRESS) * STEPS_PER_PRESS),
-                        "steps_per_press": int(STEPS_PER_PRESS),
-                    }
-                    press_summary_sensors.append(sensor_snapshot)
-                    press_summary_forces.append(np.array(ft_snapshot, dtype=float))
-                    press_summary_metadata.append(summary_meta)
-                    
+                                "timestamp": datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3],
+                                "stretch_level": float(getattr(config_module, "CURRENT_STRETCH_VALUE", 0.0)),
+                                "stretch_label": str(getattr(config_module, "CURRENT_STRETCH_LABEL", "")),
+                                "press_profile": str(getattr(config_module, "CURRENT_PRESS_PROFILE", "")),
+                                "press_depth_m": float(abs(DZ_PRESS) * STEPS_PER_PRESS),
+                                "steps_per_press": int(STEPS_PER_PRESS),
+                            }
+                            press_summary_sensors.append(sensor_snapshot)
+                            press_summary_forces.append(np.array(ft_snapshot, dtype=float))
+                            press_summary_metadata.append(summary_meta)
+                            
                             # NO LIFT needed - force-controlled press already returns to reference position above
                             # Position-controlled press also doesn't need extra lift - joint return will handle positioning
                             # Removed extra lift to prevent unnecessary movement
-                    
-                    # Calibrate after press (optional, per-position calibration)
-                    if FT_PER_POSITION_CALIBRATION_ENABLED:
-                        ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
-                    if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
-                        stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
-                
+                            
+                            # Calibrate after press (optional, per-position calibration)
+                            if FT_PER_POSITION_CALIBRATION_ENABLED:
+                                ft_calibration.measure_offset(ft_thread, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
+                            if STRETCHMAGTEC_PER_POSITION_CALIBRATION_ENABLED:
+                                stretchmagtec_calibration.measure_offsets(stretchmagtec_reader, f"pos_{position_id}_{offset_key}_post-press_{press_id}")
+                            
                             # Press completed successfully
                             press_success = True
                             break  # Exit retry loop
@@ -1872,1312 +1981,6 @@ def main():
                         print("   Continuing with next point...")
                 
                 time.sleep(1)
-
-        logger.set_label("final_position")
-        print(f"\n{'='*70}")
-        print("ALL POSITIONS COMPLETE")
-        print(f"{'='*70}")
-        time.sleep(1)
-
-        center_position = None
-        if position_ids_to_test and 'center' in GRID_OFFSETS:
-            center_id = position_ids_to_test[0]
-            center_position = get_position_with_offset(MAIN_GRID_POSITIONS[center_id], 'center')
-        elif position_ids_to_test:
-            center_position = MAIN_GRID_POSITIONS.get(position_ids_to_test[0], None)
-        elif MAIN_GRID_POSITIONS:
-            first_key = sorted(MAIN_GRID_POSITIONS.keys())[0]
-            center_position = MAIN_GRID_POSITIONS[first_key]
-
-        if center_position is not None:
-            center_pose = np.eye(4)
-            center_pose[:3, :3] = rotation_matrix
-            center_pose[:3, 3] = center_position
-            print("\nReturning robot to central position before completing the stretch run...")
-            safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
-            time.sleep(1)
-
-    finally:
-        logger.stop()
-        logger.join()
-        ft_thread.running = False
-        stretchmagtec_reader.running = False
-        ft_thread.join()
-        stretchmagtec_reader.join()
-        
-        # Generate filename with sensor name and timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        debug_suffix = "_debug" if DEBUG_MODE else ""
-        output_prefix = getattr(config_module, "CURRENT_OUTPUT_PREFIX", None)
-        if output_prefix:
-            filename = get_data_path(f"{output_prefix}.h5")
-        else:
-        filename = get_data_path(f"{SENSOR_NAME}_data_{GRID_ROWS}x{GRID_COLS}_9pt{debug_suffix}_{timestamp}.h5")
-        print(f"Saving data to: {filename}")
-        
-        forces_array = np.array(logger.forces)
-        stretchmagtec_array = np.array(logger.stretchmagtec)
-        positions_arr = np.array(logger.positions)
-        timestamps_arr = np.array(logger.timestamps, dtype='S26')
-        labels_arr = np.array(logger.labels, dtype='S64')
-        
-        # Extract individual press sequences using sequence_start and sequence_end labels
-        # Each press is saved as a separate entry in the HDF5 file
-        # IMPORTANT: We need to find the FIRST occurrence of _sequence_start for each press,
-        # not all occurrences (since the label persists until changed)
-        press_sequences = []
-        current_sequence_start = None
-        last_sequence_start_label = None  # Track the label to detect new sequences
-        
-        for idx, label in enumerate(labels_arr):
-            label_str = label.decode('utf-8') if isinstance(label, bytes) else str(label)
-            
-            if '_sequence_start' in label_str:
-                # Check if this is a NEW sequence (different press_id) or continuation of same label
-                if current_sequence_start is None or label_str != last_sequence_start_label:
-                    # This is a new sequence start
-                    if current_sequence_start is not None:
-                        # Save previous sequence if it exists (shouldn't happen normally, but handle it)
-                        press_sequences.append({
-                            'start_idx': current_sequence_start,
-                            'end_idx': idx - 1,
-                            'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                        })
-                    current_sequence_start = idx
-                    last_sequence_start_label = label_str
-            elif '_sequence_end' in label_str and current_sequence_start is not None:
-                # End of current press sequence
-                # CRITICAL: end_idx is the index of the sample WITH the sequence_end label
-                # We include this sample (inclusive), so we use end_idx: end_idx+1 in slicing
-                press_sequences.append({
-                    'start_idx': current_sequence_start,
-                    'end_idx': idx,  # This is the index of the sample with sequence_end label
-                    'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                })
-                current_sequence_start = None
-                last_sequence_start_label = None
-        
-        # If there's a sequence that didn't end, include it
-        if current_sequence_start is not None:
-            press_sequences.append({
-                'start_idx': current_sequence_start,
-                'end_idx': len(labels_arr) - 1,
-                'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-            })
-        
-        # Filter out first press (discard it)
-        # First press has press_id = PRESS_IDS[0] (usually 'A')
-        filtered_sequences = []
-        for seq in press_sequences:
-            label_str = seq['label']
-            # Extract press_id from label (e.g., "pos_32_center_press_A_sequence_start" -> "A")
-            match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
-            if match:
-                press_id = match.group(1)
-                # Skip first press (PRESS_IDS[0])
-                if press_id != PRESS_IDS[0]:
-                    filtered_sequences.append(seq)
-            else:
-                # If we can't identify the press, keep it (shouldn't happen)
-                filtered_sequences.append(seq)
-        
-        print(f"Found {len(press_sequences)} press sequences, keeping {len(filtered_sequences)} (discarded first press)")
-        
-        with h5py.File(filename, "w") as f:
-            # Save continuous data (for backward compatibility)
-            f.create_dataset("forces", data=forces_array)
-            f.create_dataset("stretchmagtec", data=stretchmagtec_array)
-            f.create_dataset("positions", data=positions_arr)
-            f.create_dataset("timestamps", data=timestamps_arr)
-            f.create_dataset("labels", data=labels_arr)
-            
-            # Save each press as a separate entry in presses group
-            if filtered_sequences:
-                presses_group = f.create_group("presses")
-                for seq_idx, seq in enumerate(filtered_sequences):
-                    start_idx = seq['start_idx']
-                    # end_idx is the index of the sample WITH the sequence_end label
-                    # We want to include this sample, so we use end_idx + 1 for slicing (exclusive end)
-                    end_idx = seq['end_idx'] + 1  # +1 because Python slicing is exclusive of end
-                    
-                    press_group = presses_group.create_group(f"press_{seq_idx:03d}")
-                    press_group.create_dataset("forces", data=forces_array[start_idx:end_idx])
-                    press_group.create_dataset("stretchmagtec", data=stretchmagtec_array[start_idx:end_idx])
-                    press_group.create_dataset("positions", data=positions_arr[start_idx:end_idx])
-                    
-                    # CRITICAL: Normalize timestamps to start from 0 for each sequence
-                    # Convert timestamps to relative time (seconds since sequence start)
-                    seq_timestamps = timestamps_arr[start_idx:end_idx]
-                    if len(seq_timestamps) > 0:
-                        # Convert first timestamp to reference
-                        first_ts_str = seq_timestamps[0].decode('utf-8') if isinstance(seq_timestamps[0], bytes) else str(seq_timestamps[0])
-                        try:
-                            first_ts = datetime.fromisoformat(first_ts_str.replace('Z', '+00:00')) if 'T' in first_ts_str else datetime.fromisoformat(first_ts_str)
-                            # Create relative timestamps (seconds since sequence start)
-                            relative_times = []
-                            for ts_bytes in seq_timestamps:
-                                ts_str = ts_bytes.decode('utf-8') if isinstance(ts_bytes, bytes) else str(ts_bytes)
-                                try:
-                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00')) if 'T' in ts_str else datetime.fromisoformat(ts_str)
-                                    relative_seconds = (ts - first_ts).total_seconds()
-                                    relative_times.append(relative_seconds)
-                                except:
-                                    # Fallback: use index-based time
-                                    relative_times.append(len(relative_times) / 100.0)
-                            
-                            # Save as numeric array (seconds, starting from 0)
-                            press_group.create_dataset("timestamps", data=np.array(relative_times, dtype=float))
-                        except:
-                            # Fallback: use index-based time (100 Hz sampling)
-                            relative_times = np.arange(len(seq_timestamps)) / 100.0
-                            press_group.create_dataset("timestamps", data=relative_times)
-                    else:
-                        press_group.create_dataset("timestamps", data=np.array([], dtype=float))
-                    
-                    press_group.create_dataset("labels", data=labels_arr[start_idx:end_idx])
-                    
-                    # Calculate and save indentation (relative Z change from initial position)
-                    seq_positions = positions_arr[start_idx:end_idx]
-                    if len(seq_positions) > 0:
-                        initial_z = seq_positions[0][2]  # Z coordinate of first sample
-                        indentation = seq_positions[:, 2] - initial_z  # Negative values = indentation (pressing down)
-                        press_group.create_dataset("indentation", data=indentation)
-                        press_group.attrs["initial_z"] = float(initial_z)
-                        press_group.attrs["max_indentation"] = float(np.min(indentation))  # Most negative = deepest press
-                    
-                    # Store metadata
-                    press_group.attrs["label"] = seq['label']
-                    press_group.attrs["start_idx"] = start_idx
-                    press_group.attrs["end_idx"] = end_idx
-                    press_group.attrs["num_samples"] = end_idx - start_idx
-                    
-                    # Extract and store offset from label (matching cleaned data structure)
-                    # Note: re is already imported at the top of the file
-                    label_str = seq['label'].decode('utf-8') if isinstance(seq['label'], bytes) else str(seq['label'])
-                    offset_match = re.search(r'pos_\d+_(\w+)_press_', label_str)
-                    if offset_match:
-                        offset_value = offset_match.group(1)
-                        press_group.attrs["offset"] = offset_value.encode('utf-8') if isinstance(offset_value, str) else offset_value
-                    else:
-                        press_group.attrs["offset"] = b"unknown"
-                    
-                    # Store stretch level (from file attributes or config)
-                    if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                        press_group.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-                    elif "stretch_level" in f.attrs:
-                        press_group.attrs["stretch_level"] = float(f.attrs["stretch_level"])
-                    else:
-                        press_group.attrs["stretch_level"] = np.nan
-                    
-                    if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                        press_group.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-                    elif "stretch_label" in f.attrs:
-                        press_group.attrs["stretch_label"] = str(f.attrs["stretch_label"])
-                    else:
-                        press_group.attrs["stretch_label"] = "unknown"
-            
-            # Save file attributes
-            f.attrs["sensor_name"] = SENSOR_NAME
-            f.attrs["robot_ip"] = ROBOT_IP
-            f.attrs["grid_rows"] = GRID_ROWS
-            f.attrs["grid_cols"] = GRID_COLS
-            f.attrs["grid_dx"] = GRID_DX
-            f.attrs["grid_dy"] = GRID_DY
-            # Ensure reference_position is saved as numpy array (matching stable format)
-            f.attrs["reference_position"] = np.array(REFERENCE_POSITION, dtype=np.float64)
-            f.attrs["grid_offsets"] = str(GRID_OFFSETS)
-            f.attrs["number_of_presses"] = NUMBER_OF_PRESSES
-            f.attrs["steps_per_press"] = STEPS_PER_PRESS
-            f.attrs["dz_press"] = DZ_PRESS
-            f.attrs["dz_lift"] = DZ_LIFT
-            # Save boolean attributes as numpy bool_ (matching stable format)
-            f.attrs["ft_calibration_enabled"] = np.bool_(FT_CALIBRATION_ENABLED)
-            f.attrs["stretchmagtec_calibration_enabled"] = np.bool_(STRETCHMAGTEC_CALIBRATION_ENABLED)
-            f.attrs["target_freq"] = TARGET_FREQ
-            if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                f.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-            if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                f.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-            if hasattr(config_module, "CURRENT_PRESS_PROFILE"):
-                f.attrs["press_profile"] = str(getattr(config_module, "CURRENT_PRESS_PROFILE"))
-            if hasattr(config_module, "CURRENT_PRESS_SETTINGS"):
-                for key, value in getattr(config_module, "CURRENT_PRESS_SETTINGS").items():
-                    # Convert value to HDF5-compatible type
-                    if value is None:
-                        # Skip None values or convert to empty string
-                        continue
-                    elif isinstance(value, (list, dict)):
-                        # Convert complex types to string
-                        f.attrs[f"press_{key}"] = str(value)
-                    elif isinstance(value, bool):
-                        # Convert bool to int (HDF5 doesn't support bool natively)
-                        f.attrs[f"press_{key}"] = int(value)
-                    elif isinstance(value, (int, float, str)):
-                    f.attrs[f"press_{key}"] = value
-                    else:
-                        # Fallback: convert to string
-                        f.attrs[f"press_{key}"] = str(value)
-            
-            if press_summary_sensors:
-                f.create_dataset(
-                    "press_summaries/sensors",
-                    data=np.array(press_summary_sensors, dtype=float)
-                )
-                f.create_dataset(
-                    "press_summaries/forces",
-                    data=np.array(press_summary_forces, dtype=float)
-                )
-                summary_strings = [json.dumps(meta) for meta in press_summary_metadata]
-                str_dtype = h5py.string_dtype(encoding='utf-8')
-                f.create_dataset(
-                    "press_summaries/metadata",
-                    data=np.array(summary_strings, dtype=str_dtype)
-                )
-
-            f.attrs["description"] = f"MagTecK_PM skin test - {GRID_ROWS}x{GRID_COLS} grid with 9-point offsets"
-            f.flush()
-        
-        # Print calibration summary
-        ft_calibration.print_calibration_summary()
-        stretchmagtec_calibration.print_calibration_summary()
-        
-        print(f"\nData collection complete. Log written to {filename}.")
-        
-        press_summary_sensors.clear()
-        press_summary_forces.clear()
-        press_summary_metadata.clear()
-        config_module.LAST_OUTPUT_FILE = str(filename)
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
-        
-        # Stop all threads
-        if 'ft_thread' in globals() and ft_thread is not None:
-            print("  Stopping FT sensor thread...")
-            ft_thread.running = False
-            if ft_thread.is_alive():
-                ft_thread.join(timeout=2.0)
-        
-        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
-            print("  Stopping StretchMagTec sensor thread...")
-            stretchmagtec_reader.running = False
-            if stretchmagtec_reader.is_alive():
-                stretchmagtec_reader.join(timeout=2.0)
-        
-        # Stop logger if it exists
-        if 'logger' in globals() and logger is not None:
-            print("  Stopping data logger...")
-            logger.stop()
-            if logger.is_alive():
-                logger.join(timeout=2.0)
-        
-        # Stop robot IMMEDIATELY (most important - must be first)
-        if 'r' in globals() and r is not None:
-            print("  Stopping robot immediately...")
-            try:
-                r.stop()
-                print("  ✅ Robot stopped")
-            except Exception as e:
-                print(f"  ⚠️  Error stopping robot: {e}")
-        
-        print("  Shutdown complete.")
-        sys.exit(0)
-
-        logger.set_label("final_position")
-        print(f"\n{'='*70}")
-        print("ALL POSITIONS COMPLETE")
-        print(f"{'='*70}")
-        time.sleep(1)
-
-        center_position = None
-        if position_ids_to_test and 'center' in GRID_OFFSETS:
-            center_id = position_ids_to_test[0]
-            center_position = get_position_with_offset(MAIN_GRID_POSITIONS[center_id], 'center')
-        elif position_ids_to_test:
-            center_position = MAIN_GRID_POSITIONS.get(position_ids_to_test[0], None)
-        elif MAIN_GRID_POSITIONS:
-            first_key = sorted(MAIN_GRID_POSITIONS.keys())[0]
-            center_position = MAIN_GRID_POSITIONS[first_key]
-
-        if center_position is not None:
-            center_pose = np.eye(4)
-            center_pose[:3, :3] = rotation_matrix
-            center_pose[:3, 3] = center_position
-            print("\nReturning robot to central position before completing the stretch run...")
-            safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
-            time.sleep(1)
-
-    finally:
-        logger.stop()
-        logger.join()
-        ft_thread.running = False
-        stretchmagtec_reader.running = False
-        ft_thread.join()
-        stretchmagtec_reader.join()
-        
-        # Generate filename with sensor name and timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        debug_suffix = "_debug" if DEBUG_MODE else ""
-        output_prefix = getattr(config_module, "CURRENT_OUTPUT_PREFIX", None)
-        if output_prefix:
-            filename = get_data_path(f"{output_prefix}.h5")
-        else:
-            filename = get_data_path(f"{SENSOR_NAME}_data_{GRID_ROWS}x{GRID_COLS}_9pt{debug_suffix}_{timestamp}.h5")
-        print(f"Saving data to: {filename}")
-        
-        forces_array = np.array(logger.forces)
-        stretchmagtec_array = np.array(logger.stretchmagtec)
-        positions_arr = np.array(logger.positions)
-        timestamps_arr = np.array(logger.timestamps, dtype='S26')
-        labels_arr = np.array(logger.labels, dtype='S64')
-        
-        # Extract individual press sequences using sequence_start and sequence_end labels
-        # Each press is saved as a separate entry in the HDF5 file
-        # IMPORTANT: We need to find the FIRST occurrence of _sequence_start for each press,
-        # not all occurrences (since the label persists until changed)
-        press_sequences = []
-        current_sequence_start = None
-        last_sequence_start_label = None  # Track the label to detect new sequences
-        
-        for idx, label in enumerate(labels_arr):
-            label_str = label.decode('utf-8') if isinstance(label, bytes) else str(label)
-            
-            if '_sequence_start' in label_str:
-                # Check if this is a NEW sequence (different press_id) or continuation of same label
-                if current_sequence_start is None or label_str != last_sequence_start_label:
-                    # This is a new sequence start
-                    if current_sequence_start is not None:
-                        # Save previous sequence if it exists (shouldn't happen normally, but handle it)
-                        press_sequences.append({
-                            'start_idx': current_sequence_start,
-                            'end_idx': idx - 1,
-                            'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                        })
-                    current_sequence_start = idx
-                    last_sequence_start_label = label_str
-            elif '_sequence_end' in label_str and current_sequence_start is not None:
-                # End of current press sequence
-                # CRITICAL: end_idx is the index of the sample WITH the sequence_end label
-                # We include this sample (inclusive), so we use end_idx: end_idx+1 in slicing
-                press_sequences.append({
-                    'start_idx': current_sequence_start,
-                    'end_idx': idx,  # This is the index of the sample with sequence_end label
-                    'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                })
-                current_sequence_start = None
-                last_sequence_start_label = None
-        
-        # If there's a sequence that didn't end, include it
-        if current_sequence_start is not None:
-            press_sequences.append({
-                'start_idx': current_sequence_start,
-                'end_idx': len(labels_arr) - 1,
-                'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-            })
-        
-        # Filter out first press (discard it)
-        # First press has press_id = PRESS_IDS[0] (usually 'A')
-        filtered_sequences = []
-        for seq in press_sequences:
-            label_str = seq['label']
-            # Extract press_id from label (e.g., "pos_32_center_press_A_sequence_start" -> "A")
-            match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
-            if match:
-                press_id = match.group(1)
-                # Skip first press (PRESS_IDS[0])
-                if press_id != PRESS_IDS[0]:
-                    filtered_sequences.append(seq)
-            else:
-                # If we can't identify the press, keep it (shouldn't happen)
-                filtered_sequences.append(seq)
-        
-        print(f"Found {len(press_sequences)} press sequences, keeping {len(filtered_sequences)} (discarded first press)")
-        
-        with h5py.File(filename, "w") as f:
-            # Save continuous data (for backward compatibility)
-            f.create_dataset("forces", data=forces_array)
-            f.create_dataset("stretchmagtec", data=stretchmagtec_array)
-            f.create_dataset("positions", data=positions_arr)
-            f.create_dataset("timestamps", data=timestamps_arr)
-            f.create_dataset("labels", data=labels_arr)
-            
-            # Save each press as a separate entry in presses group
-            if filtered_sequences:
-                presses_group = f.create_group("presses")
-                for seq_idx, seq in enumerate(filtered_sequences):
-                    start_idx = seq['start_idx']
-                    # end_idx is the index of the sample WITH the sequence_end label
-                    # We want to include this sample, so we use end_idx + 1 for slicing (exclusive end)
-                    end_idx = seq['end_idx'] + 1  # +1 because Python slicing is exclusive of end
-                    
-                    press_group = presses_group.create_group(f"press_{seq_idx:03d}")
-                    press_group.create_dataset("forces", data=forces_array[start_idx:end_idx])
-                    press_group.create_dataset("stretchmagtec", data=stretchmagtec_array[start_idx:end_idx])
-                    press_group.create_dataset("positions", data=positions_arr[start_idx:end_idx])
-                    
-                    # CRITICAL: Normalize timestamps to start from 0 for each sequence
-                    # Convert timestamps to relative time (seconds since sequence start)
-                    seq_timestamps = timestamps_arr[start_idx:end_idx]
-                    if len(seq_timestamps) > 0:
-                        # Convert first timestamp to reference
-                        first_ts_str = seq_timestamps[0].decode('utf-8') if isinstance(seq_timestamps[0], bytes) else str(seq_timestamps[0])
-                        try:
-                            first_ts = datetime.fromisoformat(first_ts_str.replace('Z', '+00:00')) if 'T' in first_ts_str else datetime.fromisoformat(first_ts_str)
-                            # Create relative timestamps (seconds since sequence start)
-                            relative_times = []
-                            for ts_bytes in seq_timestamps:
-                                ts_str = ts_bytes.decode('utf-8') if isinstance(ts_bytes, bytes) else str(ts_bytes)
-                                try:
-                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00')) if 'T' in ts_str else datetime.fromisoformat(ts_str)
-                                    relative_seconds = (ts - first_ts).total_seconds()
-                                    relative_times.append(relative_seconds)
-                                except:
-                                    # Fallback: use index-based time
-                                    relative_times.append(len(relative_times) / 100.0)
-                            
-                            # Save as numeric array (seconds, starting from 0)
-                            press_group.create_dataset("timestamps", data=np.array(relative_times, dtype=float))
-                        except:
-                            # Fallback: use index-based time (100 Hz sampling)
-                            relative_times = np.arange(len(seq_timestamps)) / 100.0
-                            press_group.create_dataset("timestamps", data=relative_times)
-                    else:
-                        press_group.create_dataset("timestamps", data=np.array([], dtype=float))
-                    
-                    press_group.create_dataset("labels", data=labels_arr[start_idx:end_idx])
-                    
-                    # Calculate and save indentation (relative Z change from initial position)
-                    seq_positions = positions_arr[start_idx:end_idx]
-                    if len(seq_positions) > 0:
-                        initial_z = seq_positions[0][2]  # Z coordinate of first sample
-                        indentation = seq_positions[:, 2] - initial_z  # Negative values = indentation (pressing down)
-                        press_group.create_dataset("indentation", data=indentation)
-                        press_group.attrs["initial_z"] = float(initial_z)
-                        press_group.attrs["max_indentation"] = float(np.min(indentation))  # Most negative = deepest press
-                    
-                    # Store metadata
-                    press_group.attrs["label"] = seq['label']
-                    press_group.attrs["start_idx"] = start_idx
-                    press_group.attrs["end_idx"] = end_idx
-                    press_group.attrs["num_samples"] = end_idx - start_idx
-                    
-                    # Extract and store offset from label (matching cleaned data structure)
-                    # Note: re is already imported at the top of the file
-                    label_str = seq['label'].decode('utf-8') if isinstance(seq['label'], bytes) else str(seq['label'])
-                    offset_match = re.search(r'pos_\d+_(\w+)_press_', label_str)
-                    if offset_match:
-                        offset_value = offset_match.group(1)
-                        press_group.attrs["offset"] = offset_value.encode('utf-8') if isinstance(offset_value, str) else offset_value
-                    else:
-                        press_group.attrs["offset"] = b"unknown"
-                    
-                    # Store stretch level (from file attributes or config)
-                    if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                        press_group.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-                    elif "stretch_level" in f.attrs:
-                        press_group.attrs["stretch_level"] = float(f.attrs["stretch_level"])
-                    else:
-                        press_group.attrs["stretch_level"] = np.nan
-                    
-                    if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                        press_group.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-                    elif "stretch_label" in f.attrs:
-                        press_group.attrs["stretch_label"] = str(f.attrs["stretch_label"])
-                    else:
-                        press_group.attrs["stretch_label"] = "unknown"
-            
-            # Save file attributes
-            f.attrs["sensor_name"] = SENSOR_NAME
-            f.attrs["robot_ip"] = ROBOT_IP
-            f.attrs["grid_rows"] = GRID_ROWS
-            f.attrs["grid_cols"] = GRID_COLS
-            f.attrs["grid_dx"] = GRID_DX
-            f.attrs["grid_dy"] = GRID_DY
-            # Ensure reference_position is saved as numpy array (matching stable format)
-            f.attrs["reference_position"] = np.array(REFERENCE_POSITION, dtype=np.float64)
-            f.attrs["grid_offsets"] = str(GRID_OFFSETS)
-            f.attrs["number_of_presses"] = NUMBER_OF_PRESSES
-            f.attrs["steps_per_press"] = STEPS_PER_PRESS
-            f.attrs["dz_press"] = DZ_PRESS
-            f.attrs["dz_lift"] = DZ_LIFT
-            # Save boolean attributes as numpy bool_ (matching stable format)
-            f.attrs["ft_calibration_enabled"] = np.bool_(FT_CALIBRATION_ENABLED)
-            f.attrs["stretchmagtec_calibration_enabled"] = np.bool_(STRETCHMAGTEC_CALIBRATION_ENABLED)
-            f.attrs["target_freq"] = TARGET_FREQ
-            if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                f.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-            if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                f.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-            if hasattr(config_module, "CURRENT_PRESS_PROFILE"):
-                f.attrs["press_profile"] = str(getattr(config_module, "CURRENT_PRESS_PROFILE"))
-            if hasattr(config_module, "CURRENT_PRESS_SETTINGS"):
-                for key, value in getattr(config_module, "CURRENT_PRESS_SETTINGS").items():
-                    # Convert value to HDF5-compatible type
-                    if value is None:
-                        # Skip None values or convert to empty string
-                        continue
-                    elif isinstance(value, (list, dict)):
-                        # Convert complex types to string
-                        f.attrs[f"press_{key}"] = str(value)
-                    elif isinstance(value, bool):
-                        # Convert bool to int (HDF5 doesn't support bool natively)
-                        f.attrs[f"press_{key}"] = int(value)
-                    elif isinstance(value, (int, float, str)):
-                        f.attrs[f"press_{key}"] = value
-                    else:
-                        # Fallback: convert to string
-                        f.attrs[f"press_{key}"] = str(value)
-            
-            if press_summary_sensors:
-                f.create_dataset(
-                    "press_summaries/sensors",
-                    data=np.array(press_summary_sensors, dtype=float)
-                )
-                f.create_dataset(
-                    "press_summaries/forces",
-                    data=np.array(press_summary_forces, dtype=float)
-                )
-                summary_strings = [json.dumps(meta) for meta in press_summary_metadata]
-                str_dtype = h5py.string_dtype(encoding='utf-8')
-                f.create_dataset(
-                    "press_summaries/metadata",
-                    data=np.array(summary_strings, dtype=str_dtype)
-                )
-
-            f.attrs["description"] = f"MagTecK_PM skin test - {GRID_ROWS}x{GRID_COLS} grid with 9-point offsets"
-            f.flush()
-        
-        # Print calibration summary
-        ft_calibration.print_calibration_summary()
-        stretchmagtec_calibration.print_calibration_summary()
-        
-        print(f"\nData collection complete. Log written to {filename}.")
-        
-        press_summary_sensors.clear()
-        press_summary_forces.clear()
-        press_summary_metadata.clear()
-        config_module.LAST_OUTPUT_FILE = str(filename)
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
-        
-        # Stop all threads
-        if 'ft_thread' in globals() and ft_thread is not None:
-            print("  Stopping FT sensor thread...")
-            ft_thread.running = False
-            if ft_thread.is_alive():
-                ft_thread.join(timeout=2.0)
-        
-        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
-            print("  Stopping StretchMagTec sensor thread...")
-            stretchmagtec_reader.running = False
-            if stretchmagtec_reader.is_alive():
-                stretchmagtec_reader.join(timeout=2.0)
-        
-        # Stop logger if it exists
-        if 'logger' in globals() and logger is not None:
-            print("  Stopping data logger...")
-            logger.stop()
-            if logger.is_alive():
-                logger.join(timeout=2.0)
-        
-        # Stop robot IMMEDIATELY (most important - must be first)
-        if 'r' in globals() and r is not None:
-            print("  Stopping robot immediately...")
-            try:
-                r.stop()
-                print("  ✅ Robot stopped")
-            except Exception as e:
-                print(f"  ⚠️  Error stopping robot: {e}")
-        
-        print("  Shutdown complete.")
-        sys.exit(0)
-
-        logger.set_label("final_position")
-        print(f"\n{'='*70}")
-        print("ALL POSITIONS COMPLETE")
-        print(f"{'='*70}")
-        time.sleep(1)
-
-        center_position = None
-        if position_ids_to_test and 'center' in GRID_OFFSETS:
-            center_id = position_ids_to_test[0]
-            center_position = get_position_with_offset(MAIN_GRID_POSITIONS[center_id], 'center')
-        elif position_ids_to_test:
-            center_position = MAIN_GRID_POSITIONS.get(position_ids_to_test[0], None)
-        elif MAIN_GRID_POSITIONS:
-            first_key = sorted(MAIN_GRID_POSITIONS.keys())[0]
-            center_position = MAIN_GRID_POSITIONS[first_key]
-
-        if center_position is not None:
-            center_pose = np.eye(4)
-            center_pose[:3, :3] = rotation_matrix
-            center_pose[:3, 3] = center_position
-            print("\nReturning robot to central position before completing the stretch run...")
-            safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
-            time.sleep(1)
-
-    finally:
-        logger.stop()
-        logger.join()
-        ft_thread.running = False
-        stretchmagtec_reader.running = False
-        ft_thread.join()
-        stretchmagtec_reader.join()
-        
-        # Generate filename with sensor name and timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        debug_suffix = "_debug" if DEBUG_MODE else ""
-        output_prefix = getattr(config_module, "CURRENT_OUTPUT_PREFIX", None)
-        if output_prefix:
-            filename = get_data_path(f"{output_prefix}.h5")
-        else:
-            filename = get_data_path(f"{SENSOR_NAME}_data_{GRID_ROWS}x{GRID_COLS}_9pt{debug_suffix}_{timestamp}.h5")
-        print(f"Saving data to: {filename}")
-        
-        forces_array = np.array(logger.forces)
-        stretchmagtec_array = np.array(logger.stretchmagtec)
-        positions_arr = np.array(logger.positions)
-        timestamps_arr = np.array(logger.timestamps, dtype='S26')
-        labels_arr = np.array(logger.labels, dtype='S64')
-        
-        # Extract individual press sequences using sequence_start and sequence_end labels
-        # Each press is saved as a separate entry in the HDF5 file
-        # IMPORTANT: We need to find the FIRST occurrence of _sequence_start for each press,
-        # not all occurrences (since the label persists until changed)
-        press_sequences = []
-        current_sequence_start = None
-        last_sequence_start_label = None  # Track the label to detect new sequences
-        
-        for idx, label in enumerate(labels_arr):
-            label_str = label.decode('utf-8') if isinstance(label, bytes) else str(label)
-            
-            if '_sequence_start' in label_str:
-                # Check if this is a NEW sequence (different press_id) or continuation of same label
-                if current_sequence_start is None or label_str != last_sequence_start_label:
-                    # This is a new sequence start
-                    if current_sequence_start is not None:
-                        # Save previous sequence if it exists (shouldn't happen normally, but handle it)
-                        press_sequences.append({
-                            'start_idx': current_sequence_start,
-                            'end_idx': idx - 1,
-                            'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                        })
-                    current_sequence_start = idx
-                    last_sequence_start_label = label_str
-            elif '_sequence_end' in label_str and current_sequence_start is not None:
-                # End of current press sequence
-                # CRITICAL: end_idx is the index of the sample WITH the sequence_end label
-                # We include this sample (inclusive), so we use end_idx: end_idx+1 in slicing
-                press_sequences.append({
-                    'start_idx': current_sequence_start,
-                    'end_idx': idx,  # This is the index of the sample with sequence_end label
-                    'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                })
-                current_sequence_start = None
-                last_sequence_start_label = None
-        
-        # If there's a sequence that didn't end, include it
-        if current_sequence_start is not None:
-            press_sequences.append({
-                'start_idx': current_sequence_start,
-                'end_idx': len(labels_arr) - 1,
-                'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-            })
-        
-        # Filter out first press (discard it)
-        # First press has press_id = PRESS_IDS[0] (usually 'A')
-        filtered_sequences = []
-        for seq in press_sequences:
-            label_str = seq['label']
-            # Extract press_id from label (e.g., "pos_32_center_press_A_sequence_start" -> "A")
-            match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
-            if match:
-                press_id = match.group(1)
-                # Skip first press (PRESS_IDS[0])
-                if press_id != PRESS_IDS[0]:
-                    filtered_sequences.append(seq)
-            else:
-                # If we can't identify the press, keep it (shouldn't happen)
-                filtered_sequences.append(seq)
-        
-        print(f"Found {len(press_sequences)} press sequences, keeping {len(filtered_sequences)} (discarded first press)")
-        
-        with h5py.File(filename, "w") as f:
-            # Save continuous data (for backward compatibility)
-            f.create_dataset("forces", data=forces_array)
-            f.create_dataset("stretchmagtec", data=stretchmagtec_array)
-            f.create_dataset("positions", data=positions_arr)
-            f.create_dataset("timestamps", data=timestamps_arr)
-            f.create_dataset("labels", data=labels_arr)
-            
-            # Save each press as a separate entry in presses group
-            if filtered_sequences:
-                presses_group = f.create_group("presses")
-                for seq_idx, seq in enumerate(filtered_sequences):
-                    start_idx = seq['start_idx']
-                    # end_idx is the index of the sample WITH the sequence_end label
-                    # We want to include this sample, so we use end_idx + 1 for slicing (exclusive end)
-                    end_idx = seq['end_idx'] + 1  # +1 because Python slicing is exclusive of end
-                    
-                    press_group = presses_group.create_group(f"press_{seq_idx:03d}")
-                    press_group.create_dataset("forces", data=forces_array[start_idx:end_idx])
-                    press_group.create_dataset("stretchmagtec", data=stretchmagtec_array[start_idx:end_idx])
-                    press_group.create_dataset("positions", data=positions_arr[start_idx:end_idx])
-                    
-                    # CRITICAL: Normalize timestamps to start from 0 for each sequence
-                    # Convert timestamps to relative time (seconds since sequence start)
-                    seq_timestamps = timestamps_arr[start_idx:end_idx]
-                    if len(seq_timestamps) > 0:
-                        # Convert first timestamp to reference
-                        first_ts_str = seq_timestamps[0].decode('utf-8') if isinstance(seq_timestamps[0], bytes) else str(seq_timestamps[0])
-                        try:
-                            first_ts = datetime.fromisoformat(first_ts_str.replace('Z', '+00:00')) if 'T' in first_ts_str else datetime.fromisoformat(first_ts_str)
-                            # Create relative timestamps (seconds since sequence start)
-                            relative_times = []
-                            for ts_bytes in seq_timestamps:
-                                ts_str = ts_bytes.decode('utf-8') if isinstance(ts_bytes, bytes) else str(ts_bytes)
-                                try:
-                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00')) if 'T' in ts_str else datetime.fromisoformat(ts_str)
-                                    relative_seconds = (ts - first_ts).total_seconds()
-                                    relative_times.append(relative_seconds)
-                                except:
-                                    # Fallback: use index-based time
-                                    relative_times.append(len(relative_times) / 100.0)
-                            
-                            # Save as numeric array (seconds, starting from 0)
-                            press_group.create_dataset("timestamps", data=np.array(relative_times, dtype=float))
-                        except:
-                            # Fallback: use index-based time (100 Hz sampling)
-                            relative_times = np.arange(len(seq_timestamps)) / 100.0
-                            press_group.create_dataset("timestamps", data=relative_times)
-                    else:
-                        press_group.create_dataset("timestamps", data=np.array([], dtype=float))
-                    
-                    press_group.create_dataset("labels", data=labels_arr[start_idx:end_idx])
-                    
-                    # Calculate and save indentation (relative Z change from initial position)
-                    seq_positions = positions_arr[start_idx:end_idx]
-                    if len(seq_positions) > 0:
-                        initial_z = seq_positions[0][2]  # Z coordinate of first sample
-                        indentation = seq_positions[:, 2] - initial_z  # Negative values = indentation (pressing down)
-                        press_group.create_dataset("indentation", data=indentation)
-                        press_group.attrs["initial_z"] = float(initial_z)
-                        press_group.attrs["max_indentation"] = float(np.min(indentation))  # Most negative = deepest press
-                    
-                    # Store metadata
-                    press_group.attrs["label"] = seq['label']
-                    press_group.attrs["start_idx"] = start_idx
-                    press_group.attrs["end_idx"] = end_idx
-                    press_group.attrs["num_samples"] = end_idx - start_idx
-                    
-                    # Extract and store offset from label (matching cleaned data structure)
-                    # Note: re is already imported at the top of the file
-                    label_str = seq['label'].decode('utf-8') if isinstance(seq['label'], bytes) else str(seq['label'])
-                    offset_match = re.search(r'pos_\d+_(\w+)_press_', label_str)
-                    if offset_match:
-                        offset_value = offset_match.group(1)
-                        press_group.attrs["offset"] = offset_value.encode('utf-8') if isinstance(offset_value, str) else offset_value
-                    else:
-                        press_group.attrs["offset"] = b"unknown"
-                    
-                    # Store stretch level (from file attributes or config)
-                    if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                        press_group.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-                    elif "stretch_level" in f.attrs:
-                        press_group.attrs["stretch_level"] = float(f.attrs["stretch_level"])
-                    else:
-                        press_group.attrs["stretch_level"] = np.nan
-                    
-                    if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                        press_group.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-                    elif "stretch_label" in f.attrs:
-                        press_group.attrs["stretch_label"] = str(f.attrs["stretch_label"])
-                    else:
-                        press_group.attrs["stretch_label"] = "unknown"
-            
-            # Save file attributes
-            f.attrs["sensor_name"] = SENSOR_NAME
-            f.attrs["robot_ip"] = ROBOT_IP
-            f.attrs["grid_rows"] = GRID_ROWS
-            f.attrs["grid_cols"] = GRID_COLS
-            f.attrs["grid_dx"] = GRID_DX
-            f.attrs["grid_dy"] = GRID_DY
-            # Ensure reference_position is saved as numpy array (matching stable format)
-            f.attrs["reference_position"] = np.array(REFERENCE_POSITION, dtype=np.float64)
-            f.attrs["grid_offsets"] = str(GRID_OFFSETS)
-            f.attrs["number_of_presses"] = NUMBER_OF_PRESSES
-            f.attrs["steps_per_press"] = STEPS_PER_PRESS
-            f.attrs["dz_press"] = DZ_PRESS
-            f.attrs["dz_lift"] = DZ_LIFT
-            # Save boolean attributes as numpy bool_ (matching stable format)
-            f.attrs["ft_calibration_enabled"] = np.bool_(FT_CALIBRATION_ENABLED)
-            f.attrs["stretchmagtec_calibration_enabled"] = np.bool_(STRETCHMAGTEC_CALIBRATION_ENABLED)
-            f.attrs["target_freq"] = TARGET_FREQ
-            if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                f.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-            if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                f.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-            if hasattr(config_module, "CURRENT_PRESS_PROFILE"):
-                f.attrs["press_profile"] = str(getattr(config_module, "CURRENT_PRESS_PROFILE"))
-            if hasattr(config_module, "CURRENT_PRESS_SETTINGS"):
-                for key, value in getattr(config_module, "CURRENT_PRESS_SETTINGS").items():
-                    # Convert value to HDF5-compatible type
-                    if value is None:
-                        # Skip None values or convert to empty string
-                        continue
-                    elif isinstance(value, (list, dict)):
-                        # Convert complex types to string
-                        f.attrs[f"press_{key}"] = str(value)
-                    elif isinstance(value, bool):
-                        # Convert bool to int (HDF5 doesn't support bool natively)
-                        f.attrs[f"press_{key}"] = int(value)
-                    elif isinstance(value, (int, float, str)):
-                        f.attrs[f"press_{key}"] = value
-                    else:
-                        # Fallback: convert to string
-                        f.attrs[f"press_{key}"] = str(value)
-            
-            if press_summary_sensors:
-                f.create_dataset(
-                    "press_summaries/sensors",
-                    data=np.array(press_summary_sensors, dtype=float)
-                )
-                f.create_dataset(
-                    "press_summaries/forces",
-                    data=np.array(press_summary_forces, dtype=float)
-                )
-                summary_strings = [json.dumps(meta) for meta in press_summary_metadata]
-                str_dtype = h5py.string_dtype(encoding='utf-8')
-                f.create_dataset(
-                    "press_summaries/metadata",
-                    data=np.array(summary_strings, dtype=str_dtype)
-                )
-
-            f.attrs["description"] = f"MagTecK_PM skin test - {GRID_ROWS}x{GRID_COLS} grid with 9-point offsets"
-            f.flush()
-        
-        # Print calibration summary
-        ft_calibration.print_calibration_summary()
-        stretchmagtec_calibration.print_calibration_summary()
-        
-        print(f"\nData collection complete. Log written to {filename}.")
-        
-        press_summary_sensors.clear()
-        press_summary_forces.clear()
-        press_summary_metadata.clear()
-        config_module.LAST_OUTPUT_FILE = str(filename)
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
-        
-        # Stop all threads
-        if 'ft_thread' in globals() and ft_thread is not None:
-            print("  Stopping FT sensor thread...")
-            ft_thread.running = False
-            if ft_thread.is_alive():
-                ft_thread.join(timeout=2.0)
-        
-        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
-            print("  Stopping StretchMagTec sensor thread...")
-            stretchmagtec_reader.running = False
-            if stretchmagtec_reader.is_alive():
-                stretchmagtec_reader.join(timeout=2.0)
-        
-        # Stop logger if it exists
-        if 'logger' in globals() and logger is not None:
-            print("  Stopping data logger...")
-            logger.stop()
-            if logger.is_alive():
-                logger.join(timeout=2.0)
-        
-        # Stop robot IMMEDIATELY (most important - must be first)
-        if 'r' in globals() and r is not None:
-            print("  Stopping robot immediately...")
-            try:
-                r.stop()
-                print("  ✅ Robot stopped")
-            except Exception as e:
-                print(f"  ⚠️  Error stopping robot: {e}")
-        
-        print("  Shutdown complete.")
-        sys.exit(0)
-
-        logger.set_label("final_position")
-        print(f"\n{'='*70}")
-        print("ALL POSITIONS COMPLETE")
-        print(f"{'='*70}")
-        time.sleep(1)
-
-        center_position = None
-        if position_ids_to_test and 'center' in GRID_OFFSETS:
-            center_id = position_ids_to_test[0]
-            center_position = get_position_with_offset(MAIN_GRID_POSITIONS[center_id], 'center')
-        elif position_ids_to_test:
-            center_position = MAIN_GRID_POSITIONS.get(position_ids_to_test[0], None)
-        elif MAIN_GRID_POSITIONS:
-            first_key = sorted(MAIN_GRID_POSITIONS.keys())[0]
-            center_position = MAIN_GRID_POSITIONS[first_key]
-
-        if center_position is not None:
-            center_pose = np.eye(4)
-            center_pose[:3, :3] = rotation_matrix
-            center_pose[:3, 3] = center_position
-            print("\nReturning robot to central position before completing the stretch run...")
-            safe_robot_move(r, "absolute", center_pose, duration=ABSOLUTE_MOVEMENT_DURATION)
-            time.sleep(1)
-
-    finally:
-        logger.stop()
-        logger.join()
-        ft_thread.running = False
-        stretchmagtec_reader.running = False
-        ft_thread.join()
-        stretchmagtec_reader.join()
-        
-        # Generate filename with sensor name and timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        debug_suffix = "_debug" if DEBUG_MODE else ""
-        output_prefix = getattr(config_module, "CURRENT_OUTPUT_PREFIX", None)
-        if output_prefix:
-            filename = get_data_path(f"{output_prefix}.h5")
-        else:
-            filename = get_data_path(f"{SENSOR_NAME}_data_{GRID_ROWS}x{GRID_COLS}_9pt{debug_suffix}_{timestamp}.h5")
-        print(f"Saving data to: {filename}")
-        
-        forces_array = np.array(logger.forces)
-        stretchmagtec_array = np.array(logger.stretchmagtec)
-        positions_arr = np.array(logger.positions)
-        timestamps_arr = np.array(logger.timestamps, dtype='S26')
-        labels_arr = np.array(logger.labels, dtype='S64')
-        
-        # Extract individual press sequences using sequence_start and sequence_end labels
-        # Each press is saved as a separate entry in the HDF5 file
-        # IMPORTANT: We need to find the FIRST occurrence of _sequence_start for each press,
-        # not all occurrences (since the label persists until changed)
-        press_sequences = []
-        current_sequence_start = None
-        last_sequence_start_label = None  # Track the label to detect new sequences
-        
-        for idx, label in enumerate(labels_arr):
-            label_str = label.decode('utf-8') if isinstance(label, bytes) else str(label)
-            
-            if '_sequence_start' in label_str:
-                # Check if this is a NEW sequence (different press_id) or continuation of same label
-                if current_sequence_start is None or label_str != last_sequence_start_label:
-                    # This is a new sequence start
-                    if current_sequence_start is not None:
-                        # Save previous sequence if it exists (shouldn't happen normally, but handle it)
-                        press_sequences.append({
-                            'start_idx': current_sequence_start,
-                            'end_idx': idx - 1,
-                            'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                        })
-                    current_sequence_start = idx
-                    last_sequence_start_label = label_str
-            elif '_sequence_end' in label_str and current_sequence_start is not None:
-                # End of current press sequence
-                # CRITICAL: end_idx is the index of the sample WITH the sequence_end label
-                # We include this sample (inclusive), so we use end_idx: end_idx+1 in slicing
-                press_sequences.append({
-                    'start_idx': current_sequence_start,
-                    'end_idx': idx,  # This is the index of the sample with sequence_end label
-                    'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-                })
-                current_sequence_start = None
-                last_sequence_start_label = None
-        
-        # If there's a sequence that didn't end, include it
-        if current_sequence_start is not None:
-            press_sequences.append({
-                'start_idx': current_sequence_start,
-                'end_idx': len(labels_arr) - 1,
-                'label': labels_arr[current_sequence_start].decode('utf-8') if isinstance(labels_arr[current_sequence_start], bytes) else str(labels_arr[current_sequence_start])
-            })
-        
-        # Filter out first press (discard it)
-        # First press has press_id = PRESS_IDS[0] (usually 'A')
-        filtered_sequences = []
-        for seq in press_sequences:
-            label_str = seq['label']
-            # Extract press_id from label (e.g., "pos_32_center_press_A_sequence_start" -> "A")
-            match = re.search(r'press_([A-Za-z0-9_]+)_sequence', label_str)
-            if match:
-                press_id = match.group(1)
-                # Skip first press (PRESS_IDS[0])
-                if press_id != PRESS_IDS[0]:
-                    filtered_sequences.append(seq)
-            else:
-                # If we can't identify the press, keep it (shouldn't happen)
-                filtered_sequences.append(seq)
-        
-        print(f"Found {len(press_sequences)} press sequences, keeping {len(filtered_sequences)} (discarded first press)")
-        
-        with h5py.File(filename, "w") as f:
-            # Save continuous data (for backward compatibility)
-            f.create_dataset("forces", data=forces_array)
-            f.create_dataset("stretchmagtec", data=stretchmagtec_array)
-            f.create_dataset("positions", data=positions_arr)
-            f.create_dataset("timestamps", data=timestamps_arr)
-            f.create_dataset("labels", data=labels_arr)
-            
-            # Save each press as a separate entry in presses group
-            if filtered_sequences:
-                presses_group = f.create_group("presses")
-                for seq_idx, seq in enumerate(filtered_sequences):
-                    start_idx = seq['start_idx']
-                    # end_idx is the index of the sample WITH the sequence_end label
-                    # We want to include this sample, so we use end_idx + 1 for slicing (exclusive end)
-                    end_idx = seq['end_idx'] + 1  # +1 because Python slicing is exclusive of end
-                    
-                    press_group = presses_group.create_group(f"press_{seq_idx:03d}")
-                    press_group.create_dataset("forces", data=forces_array[start_idx:end_idx])
-                    press_group.create_dataset("stretchmagtec", data=stretchmagtec_array[start_idx:end_idx])
-                    press_group.create_dataset("positions", data=positions_arr[start_idx:end_idx])
-                    
-                    # CRITICAL: Normalize timestamps to start from 0 for each sequence
-                    # Convert timestamps to relative time (seconds since sequence start)
-                    seq_timestamps = timestamps_arr[start_idx:end_idx]
-                    if len(seq_timestamps) > 0:
-                        # Convert first timestamp to reference
-                        first_ts_str = seq_timestamps[0].decode('utf-8') if isinstance(seq_timestamps[0], bytes) else str(seq_timestamps[0])
-                        try:
-                            first_ts = datetime.fromisoformat(first_ts_str.replace('Z', '+00:00')) if 'T' in first_ts_str else datetime.fromisoformat(first_ts_str)
-                            # Create relative timestamps (seconds since sequence start)
-                            relative_times = []
-                            for ts_bytes in seq_timestamps:
-                                ts_str = ts_bytes.decode('utf-8') if isinstance(ts_bytes, bytes) else str(ts_bytes)
-                                try:
-                                    ts = datetime.fromisoformat(ts_str.replace('Z', '+00:00')) if 'T' in ts_str else datetime.fromisoformat(ts_str)
-                                    relative_seconds = (ts - first_ts).total_seconds()
-                                    relative_times.append(relative_seconds)
-                                except:
-                                    # Fallback: use index-based time
-                                    relative_times.append(len(relative_times) / 100.0)
-                            
-                            # Save as numeric array (seconds, starting from 0)
-                            press_group.create_dataset("timestamps", data=np.array(relative_times, dtype=float))
-                        except:
-                            # Fallback: use index-based time (100 Hz sampling)
-                            relative_times = np.arange(len(seq_timestamps)) / 100.0
-                            press_group.create_dataset("timestamps", data=relative_times)
-                    else:
-                        press_group.create_dataset("timestamps", data=np.array([], dtype=float))
-                    
-                    press_group.create_dataset("labels", data=labels_arr[start_idx:end_idx])
-                    
-                    # Calculate and save indentation (relative Z change from initial position)
-                    seq_positions = positions_arr[start_idx:end_idx]
-                    if len(seq_positions) > 0:
-                        initial_z = seq_positions[0][2]  # Z coordinate of first sample
-                        indentation = seq_positions[:, 2] - initial_z  # Negative values = indentation (pressing down)
-                        press_group.create_dataset("indentation", data=indentation)
-                        press_group.attrs["initial_z"] = float(initial_z)
-                        press_group.attrs["max_indentation"] = float(np.min(indentation))  # Most negative = deepest press
-                    
-                    # Store metadata
-                    press_group.attrs["label"] = seq['label']
-                    press_group.attrs["start_idx"] = start_idx
-                    press_group.attrs["end_idx"] = end_idx
-                    press_group.attrs["num_samples"] = end_idx - start_idx
-                    
-                    # Extract and store offset from label (matching cleaned data structure)
-                    # Note: re is already imported at the top of the file
-                    label_str = seq['label'].decode('utf-8') if isinstance(seq['label'], bytes) else str(seq['label'])
-                    offset_match = re.search(r'pos_\d+_(\w+)_press_', label_str)
-                    if offset_match:
-                        offset_value = offset_match.group(1)
-                        press_group.attrs["offset"] = offset_value.encode('utf-8') if isinstance(offset_value, str) else offset_value
-                    else:
-                        press_group.attrs["offset"] = b"unknown"
-                    
-                    # Store stretch level (from file attributes or config)
-                    if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                        press_group.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-                    elif "stretch_level" in f.attrs:
-                        press_group.attrs["stretch_level"] = float(f.attrs["stretch_level"])
-                    else:
-                        press_group.attrs["stretch_level"] = np.nan
-                    
-                    if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                        press_group.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-                    elif "stretch_label" in f.attrs:
-                        press_group.attrs["stretch_label"] = str(f.attrs["stretch_label"])
-                    else:
-                        press_group.attrs["stretch_label"] = "unknown"
-            
-            # Save file attributes
-            f.attrs["sensor_name"] = SENSOR_NAME
-            f.attrs["robot_ip"] = ROBOT_IP
-            f.attrs["grid_rows"] = GRID_ROWS
-            f.attrs["grid_cols"] = GRID_COLS
-            f.attrs["grid_dx"] = GRID_DX
-            f.attrs["grid_dy"] = GRID_DY
-            # Ensure reference_position is saved as numpy array (matching stable format)
-            f.attrs["reference_position"] = np.array(REFERENCE_POSITION, dtype=np.float64)
-            f.attrs["grid_offsets"] = str(GRID_OFFSETS)
-            f.attrs["number_of_presses"] = NUMBER_OF_PRESSES
-            f.attrs["steps_per_press"] = STEPS_PER_PRESS
-            f.attrs["dz_press"] = DZ_PRESS
-            f.attrs["dz_lift"] = DZ_LIFT
-            # Save boolean attributes as numpy bool_ (matching stable format)
-            f.attrs["ft_calibration_enabled"] = np.bool_(FT_CALIBRATION_ENABLED)
-            f.attrs["stretchmagtec_calibration_enabled"] = np.bool_(STRETCHMAGTEC_CALIBRATION_ENABLED)
-            f.attrs["target_freq"] = TARGET_FREQ
-            if hasattr(config_module, "CURRENT_STRETCH_VALUE"):
-                f.attrs["stretch_level"] = float(getattr(config_module, "CURRENT_STRETCH_VALUE"))
-            if hasattr(config_module, "CURRENT_STRETCH_LABEL"):
-                f.attrs["stretch_label"] = str(getattr(config_module, "CURRENT_STRETCH_LABEL"))
-            if hasattr(config_module, "CURRENT_PRESS_PROFILE"):
-                f.attrs["press_profile"] = str(getattr(config_module, "CURRENT_PRESS_PROFILE"))
-            if hasattr(config_module, "CURRENT_PRESS_SETTINGS"):
-                for key, value in getattr(config_module, "CURRENT_PRESS_SETTINGS").items():
-                    # Convert value to HDF5-compatible type
-                    if value is None:
-                        # Skip None values or convert to empty string
-                        continue
-                    elif isinstance(value, (list, dict)):
-                        # Convert complex types to string
-                        f.attrs[f"press_{key}"] = str(value)
-                    elif isinstance(value, bool):
-                        # Convert bool to int (HDF5 doesn't support bool natively)
-                        f.attrs[f"press_{key}"] = int(value)
-                    elif isinstance(value, (int, float, str)):
-                        f.attrs[f"press_{key}"] = value
-                    else:
-                        # Fallback: convert to string
-                        f.attrs[f"press_{key}"] = str(value)
-            
-            if press_summary_sensors:
-                f.create_dataset(
-                    "press_summaries/sensors",
-                    data=np.array(press_summary_sensors, dtype=float)
-                )
-                f.create_dataset(
-                    "press_summaries/forces",
-                    data=np.array(press_summary_forces, dtype=float)
-                )
-                summary_strings = [json.dumps(meta) for meta in press_summary_metadata]
-                str_dtype = h5py.string_dtype(encoding='utf-8')
-                f.create_dataset(
-                    "press_summaries/metadata",
-                    data=np.array(summary_strings, dtype=str_dtype)
-                )
-
-            f.attrs["description"] = f"MagTecK_PM skin test - {GRID_ROWS}x{GRID_COLS} grid with 9-point offsets"
-            f.flush()
-        
-        # Print calibration summary
-        ft_calibration.print_calibration_summary()
-        stretchmagtec_calibration.print_calibration_summary()
-        
-        print(f"\nData collection complete. Log written to {filename}.")
-        
-        press_summary_sensors.clear()
-        press_summary_forces.clear()
-        press_summary_metadata.clear()
-        config_module.LAST_OUTPUT_FILE = str(filename)
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
-        
-        # Stop all threads
-        if 'ft_thread' in globals() and ft_thread is not None:
-            print("  Stopping FT sensor thread...")
-            ft_thread.running = False
-            if ft_thread.is_alive():
-                ft_thread.join(timeout=2.0)
-        
-        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
-            print("  Stopping StretchMagTec sensor thread...")
-            stretchmagtec_reader.running = False
-            if stretchmagtec_reader.is_alive():
-                stretchmagtec_reader.join(timeout=2.0)
-        
-        # Stop logger if it exists
-        if 'logger' in globals() and logger is not None:
-            print("  Stopping data logger...")
-            logger.stop()
-            if logger.is_alive():
-                logger.join(timeout=2.0)
-        
-        # Stop robot IMMEDIATELY (most important - must be first)
-        if 'r' in globals() and r is not None:
-            print("  Stopping robot immediately...")
-            try:
-                r.stop()
-                print("  ✅ Robot stopped")
-            except Exception as e:
-                print(f"  ⚠️  Error stopping robot: {e}")
-        
-        print("  Shutdown complete.")
-        sys.exit(0)
-        
-        # Print calibration summary
-        ft_calibration.print_calibration_summary()
-        stretchmagtec_calibration.print_calibration_summary()
-        
-        print(f"\nData collection complete. Log written to {filename}.")
-        
-        press_summary_sensors.clear()
-        press_summary_forces.clear()
-        press_summary_metadata.clear()
-        config_module.LAST_OUTPUT_FILE = str(filename)
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n\n⚠️  KeyboardInterrupt (Ctrl+C) detected - shutting down gracefully...")
-        
-        # Stop all threads
-        if 'ft_thread' in globals() and ft_thread is not None:
-            print("  Stopping FT sensor thread...")
-            ft_thread.running = False
-            if ft_thread.is_alive():
-                ft_thread.join(timeout=2.0)
-        
-        if 'stretchmagtec_reader' in globals() and stretchmagtec_reader is not None:
-            print("  Stopping StretchMagTec sensor thread...")
-            stretchmagtec_reader.running = False
-            if stretchmagtec_reader.is_alive():
-                stretchmagtec_reader.join(timeout=2.0)
-        
-        # Stop logger if it exists
-        if 'logger' in globals() and logger is not None:
-            print("  Stopping data logger...")
-            logger.stop()
-            if logger.is_alive():
-                logger.join(timeout=2.0)
-        
-        # Stop robot IMMEDIATELY (most important - must be first)
-        if 'r' in globals() and r is not None:
-            print("  Stopping robot immediately...")
-            try:
-                r.stop()
-                print("  ✅ Robot stopped")
-            except Exception as e:
-                print(f"  ⚠️  Error stopping robot: {e}")
-        
-        print("  Shutdown complete.")
-        sys.exit(0)
 
         logger.set_label("final_position")
         print(f"\n{'='*70}")

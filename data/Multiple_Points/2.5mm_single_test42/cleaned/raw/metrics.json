@@ -1,0 +1,45 @@
+{
+  "run_label": "test42_multipoint",
+  "feature_method": "raw",
+  "n_stretch_levels": 3,
+  "stretch_results": {
+    "000pct": {
+      "rmse": 0.0729829666039186,
+      "std_dev": 0.07297804337629704,
+      "delta_f_min": 0.009999999999999787,
+      "kpm1": true,
+      "kpm2": false,
+      "location_accuracy": 1.0,
+      "n_train": 230,
+      "n_test": 100
+    },
+    "010pct": {
+      "rmse": 0.07835227017267392,
+      "std_dev": 0.07831409873103945,
+      "delta_f_min": 0.009999999999999787,
+      "kpm1": true,
+      "kpm2": false,
+      "location_accuracy": 0.9759225498208336,
+      "n_train": 230,
+      "n_test": 100
+    },
+    "020pct": {
+      "rmse": 0.09087595421543161,
+      "std_dev": 0.09033886529004553,
+      "delta_f_min": 0.009999999999999787,
+      "kpm1": true,
+      "kpm2": false,
+      "location_accuracy": 1.0,
+      "n_train": 230,
+      "n_test": 100
+    }
+  },
+  "combined_results": {
+    "rmse": 0.08547692478526216,
+    "std_dev": 0.08547091917309273,
+    "delta_f_min": 0.009999999999999787,
+    "kpm1": true,
+    "kpm2": false,
+    "location_accuracy": 0.9852137643378519
+  }
+}
