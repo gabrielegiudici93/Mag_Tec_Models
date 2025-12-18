@@ -1,0 +1,77 @@
+{
+  "project": "MagTec Models - Multi-Point Tactile Sensor ML Framework",
+  "version": "1.0.0",
+  "models": {
+    "force_regression": {
+      "fz": {
+        "rmse": 0.0854,
+        "r2": 0.9898,
+        "dataset": "normal_forces_test42",
+        "sequences_per_stretch": 330,
+        "baseline_removal": false
+      },
+      "fx": {
+        "rmse": 0.2021,
+        "r2": 0.9827,
+        "dataset": "shear_forces_test51_x_directions",
+        "sequences_per_stretch": 400,
+        "baseline_removal": true
+      },
+      "fy": {
+        "rmse": 0.1512,
+        "r2": 0.99,
+        "dataset": "shear_forces_test51_y_directions",
+        "sequences_per_stretch": 400,
+        "baseline_removal": true
+      }
+    },
+    "location_classification": {
+      "accuracy": 0.9959,
+      "best_feature_method": "raw",
+      "features": 45,
+      "classes": 11,
+      "dataset": "combined_normal_shear"
+    },
+    "stretch_classification": {
+      "accuracy": 0.993,
+      "feature_method": "raw",
+      "features": 45,
+      "classes": 3,
+      "dataset": "combined_normal_shear"
+    }
+  },
+  "data_structure": {
+    "normal_forces": {
+      "format": "HDF5",
+      "structure": "presses/press_XXX/{forces, stretchmagtec, timestamps}",
+      "locations": 11,
+      "sequences_per_location": 30,
+      "stretch_levels": [
+        "000pct",
+        "010pct",
+        "020pct"
+      ]
+    },
+    "shear_forces": {
+      "format": "HDF5",
+      "structure": "presses/press_XXX/{forces, stretchmagtec, timestamps}",
+      "locations": 10,
+      "sequences_per_location_per_direction": 20,
+      "directions": [
+        "x+",
+        "x-",
+        "y+",
+        "y-"
+      ],
+      "stretch_levels": [
+        "000pct",
+        "010pct",
+        "020pct"
+      ]
+    }
+  },
+  "file_sizes": {
+    "normal_forces_test42": "~3.0 GB",
+    "shear_forces_test51": "~5.1 GB"
+  }
+}

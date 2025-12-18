@@ -1,0 +1,567 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{siunitx}
+
+\geometry{margin=2.5cm}
+
+\title{Multi-Point Tactile Sensor Force Regression and Classification Models}
+\author{MagTec Models Research Team}
+\date{\today}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,      
+    urlcolor=cyan,
+    pdftitle={Multi-Point Tactile Sensor Models},
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    stringstyle=\color{red},
+    commentstyle=\color{green!60!black},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    numbersep=5pt,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    breaklines=true,
+    showstringspaces=false
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document describes the development and implementation of machine learning models for multi-point tactile sensor systems. The models enable force regression (Fx, Fy, Fz components) and classification tasks (location and stretch level) using magnetic field sensor data. The system utilizes a combination of normal force and shear force datasets, achieving high accuracy across all tasks: Fz regression RMSE of \SI{0.0854}{\newton} (R² = 0.9898), Fx regression RMSE of \SI{0.2021}{\newton} (R² = 0.9827), Fy regression RMSE of \SI{0.1512}{\newton} (R² = 0.9900), location classification accuracy of 99.59\%, and stretch classification accuracy of 99.30\%.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+
+Multi-point tactile sensing systems require accurate force estimation and spatial localization capabilities. This document presents a comprehensive machine learning framework for processing magnetic field sensor data from a 15-taxel StretchMagTec sensor array to predict contact forces and classify contact locations and material stretch levels.
+
+\subsection{System Overview}
+
+The tactile sensing system consists of:
+\begin{itemize}
+    \item \textbf{Sensor Array}: 15 magnetic field sensors (taxels) arranged in a 3×5 grid
+    \item \textbf{Force/Torque Sensor}: FT-300S sensor providing ground truth force measurements
+    \item \textbf{Data Collection}: Robotic manipulation system (Franka Emika Panda) for controlled data acquisition
+    \item \textbf{ML Models}: Random Forest regressors and classifiers for force prediction and classification
+\end{itemize}
+
+\section{Mathematical Framework}
+
+\subsection{Feature Extraction}
+
+The magnetic field sensor provides a 3D vector measurement for each taxel, resulting in a feature vector $\mathbf{m} \in \mathbb{R}^{15 \times 3} = \mathbb{R}^{45}$ for each time sample.
+
+\subsubsection{Raw Features}
+
+The raw feature vector $\mathbf{x}_{\text{raw}}$ is constructed by flattening the magnetic field tensor:
+\begin{equation}
+\mathbf{x}_{\text{raw}} = \text{vec}(\mathbf{M}) = [m_{1,x}, m_{1,y}, m_{1,z}, \ldots, m_{15,x}, m_{15,y}, m_{15,z}]^T \in \mathbb{R}^{45}
+\end{equation}
+where $\mathbf{M} \in \mathbb{R}^{15 \times 3}$ is the magnetic field matrix and $m_{i,j}$ represents the $j$-th component (x, y, z) of the $i$-th taxel.
+
+\subsubsection{Magnitude Features}
+
+An alternative feature representation uses the magnitude (L2 norm) of each taxel's magnetic field vector:
+\begin{equation}
+\mathbf{x}_{\text{mag}} = [\|\mathbf{m}_1\|_2, \|\mathbf{m}_2\|_2, \ldots, \|\mathbf{m}_{15}\|_2]^T \in \mathbb{R}^{15}
+\end{equation}
+where $\|\mathbf{m}_i\|_2 = \sqrt{m_{i,x}^2 + m_{i,y}^2 + m_{i,z}^2}$ is the Euclidean norm of the $i$-th taxel's magnetic field vector.
+
+\subsubsection{Normalized Magnitude Features}
+
+For improved robustness, magnitude features can be normalized per sensor:
+\begin{equation}
+\mathbf{x}_{\text{mag,norm}} = \left[\frac{\|\mathbf{m}_1\|_2 - m_{1,\min}}{m_{1,\max} - m_{1,\min}}, \ldots, \frac{\|\mathbf{m}_{15}\|_2 - m_{15,\min}}{m_{15,\max} - m_{15,\min}}\right]^T
+\end{equation}
+where $m_{i,\min}$ and $m_{i,\max}$ are the minimum and maximum magnitudes observed for taxel $i$ across the training dataset.
+
+\subsection{Data Preprocessing}
+
+\subsubsection{Baseline Removal}
+
+For shear force regression, baseline removal is applied to isolate force variations from initial sensor offsets. The baseline $\bar{\mathbf{f}}_0$ is computed from the first 10\% of samples in each sequence:
+\begin{equation}
+\bar{f}_{0,k} = \frac{1}{N_0} \sum_{n=1}^{N_0} f_{k,n}, \quad k \in \{x, y, z\}
+\end{equation}
+where $N_0 = \lceil 0.1 \cdot N \rceil$ and $N$ is the sequence length. The baseline-removed force is:
+\begin{equation}
+\tilde{f}_{k,n} = f_{k,n} - \bar{f}_{0,k}
+\end{equation}
+
+\textbf{Important}: For Fz regression with normal forces, baseline removal is \textit{not} applied, as absolute force values are required.
+
+\subsubsection{Displacement Filtering}
+
+High-frequency noise is filtered using displacement-based filtering. The displacement $\Delta_n$ between consecutive samples is computed:
+\begin{equation}
+\Delta_n = \|\mathbf{x}_n - \mathbf{x}_{n-1}\|_2
+\end{equation}
+Samples exceeding the 95th percentile threshold are removed:
+\begin{equation}
+\mathcal{M} = \{n : \Delta_n < \text{percentile}(\{\Delta_i\}, 95)\}
+\end{equation}
+
+\subsubsection{Force Clipping}
+
+For regression targets, forces are clipped to valid ranges:
+\begin{align}
+\tilde{f}_x &\leftarrow \text{clip}(\tilde{f}_x, -2.0, 2.0) \quad \text{[N]} \\
+\tilde{f}_y &\leftarrow \text{clip}(\tilde{f}_y, -2.0, 2.0) \quad \text{[N]} \\
+f_z &\leftarrow \min(f_z, 3.0) \quad \text{[N]}
+\end{align}
+
+\subsection{Force Regression Models}
+
+\subsubsection{Fz Regression}
+
+The Fz regressor $\mathcal{R}_{Fz}: \mathbb{R}^{45} \rightarrow \mathbb{R}$ predicts normal force magnitude:
+\begin{equation}
+\hat{f}_z = \mathcal{R}_{Fz}(\mathbf{x})
+\end{equation}
+
+\textbf{Dataset}: Normal forces only (test42)
+\begin{itemize}
+    \item 30 sequences per location × 11 locations = 330 sequences per stretch level
+    \item Total: 990 sequences across 3 stretch levels
+    \item \textbf{No baseline removal} (absolute force values)
+\end{itemize}
+
+\textbf{Model}: Random Forest Regressor with 200 estimators
+
+\textbf{Performance}:
+\begin{align}
+\text{RMSE} &= \SI{0.0854}{\newton} \\
+R^2 &= 0.9898
+\end{align}
+
+\subsubsection{Fx Regression}
+
+The Fx regressor $\mathcal{R}_{Fx}: \mathbb{R}^{45} \rightarrow \mathbb{R}$ predicts shear force in the x-direction:
+\begin{equation}
+\hat{f}_x = \mathcal{R}_{Fx}(\mathbf{x})
+\end{equation}
+
+\textbf{Dataset}: Shear forces only (test51), x+ and x- sequences
+\begin{itemize}
+    \item 20 sequences per location per direction × 10 locations × 2 directions = 400 sequences per stretch
+    \item Total: ~1200 sequences across 3 stretch levels
+    \item \textbf{Baseline removal applied}
+    \item \textbf{Fx inversion}: Due to action-reaction principle, Fx is inverted for x-direction movements
+\end{itemize}
+
+\textbf{Model}: Random Forest Regressor with 200 estimators
+
+\textbf{Performance}:
+\begin{align}
+\text{RMSE} &= \SI{0.2021}{\newton} \\
+R^2 &= 0.9827
+\end{align}
+
+\subsubsection{Fy Regression}
+
+The Fy regressor $\mathcal{R}_{Fy}: \mathbb{R}^{45} \rightarrow \mathbb{R}$ predicts shear force in the y-direction:
+\begin{equation}
+\hat{f}_y = \mathcal{R}_{Fy}(\mathbf{x})
+\end{equation}
+
+\textbf{Dataset}: Shear forces only (test51), y+ and y- sequences
+\begin{itemize}
+    \item 20 sequences per location per direction × 10 locations × 2 directions = 400 sequences per stretch
+    \item Total: ~1200 sequences across 3 stretch levels
+    \item \textbf{Baseline removal applied}
+\end{itemize}
+
+\textbf{Model}: Random Forest Regressor with 200 estimators
+
+\textbf{Performance}:
+\begin{align}
+\text{RMSE} &= \SI{0.1512}{\newton} \\
+R^2 &= 0.9900
+\end{align}
+
+\subsection{Classification Models}
+
+\subsubsection{Location Classification}
+
+The location classifier $\mathcal{C}_{\text{loc}}: \mathbb{R}^{45} \rightarrow \{0, 1, \ldots, 10\}$ maps magnetic field features to contact locations:
+\begin{equation}
+\hat{\ell} = \mathcal{C}_{\text{loc}}(\mathbf{x})
+\end{equation}
+where $\ell \in \{0, \ldots, 9\}$ represents contact points 1-10, and $\ell = 10$ represents no contact.
+
+\textbf{Dataset}: Combined normal + shear forces
+\begin{itemize}
+    \item Normal: 330 sequences per stretch (30 per location)
+    \item Shear: ~800 sequences per stretch (20 per location × 4 directions)
+    \item Combined: ~1130 sequences per stretch
+    \item Total: ~3390 sequences across 3 stretch levels
+\end{itemize}
+
+\textbf{Feature Method}: Raw features (45 dimensions) or Magnitude features (15 dimensions)
+
+\textbf{Model}: Random Forest Classifier with 200 estimators, class\_weight='balanced'
+
+\textbf{Performance}:
+\begin{align}
+\text{Accuracy} &= 99.59\% \\
+\text{Features} &= 45 \text{ (raw)} \text{ or } 15 \text{ (magnitude)}
+\end{align}
+
+\subsubsection{Stretch Classification}
+
+The stretch classifier $\mathcal{C}_{\text{stretch}}: \mathbb{R}^{45} \rightarrow \{0, 1, 2\}$ predicts material stretch level:
+\begin{equation}
+\hat{s} = \mathcal{C}_{\text{stretch}}(\mathbf{x})
+\end{equation}
+where $s \in \{0, 1, 2\}$ corresponds to \{0\%, 10\%, 20\%\} stretch levels.
+
+\textbf{Dataset}: Combined normal + shear forces (same as location classification)
+
+\textbf{Feature Method}: Raw features (45 dimensions)
+
+\textbf{Model}: Random Forest Classifier with 200 estimators
+
+\textbf{Performance}:
+\begin{equation}
+\text{Accuracy} = 99.30\%
+\end{equation}
+
+\section{Model Architecture}
+
+\subsection{Random Forest Algorithm}
+
+All models utilize Random Forest (RF) algorithms, which combine multiple decision trees through ensemble learning.
+
+\subsubsection{Regression}
+
+For regression tasks, the RF regressor aggregates predictions from $B$ trees:
+\begin{equation}
+\hat{y} = \frac{1}{B} \sum_{b=1}^{B} T_b(\mathbf{x})
+\end{equation}
+where $T_b: \mathbb{R}^{d} \rightarrow \mathbb{R}$ is the $b$-th decision tree.
+
+Each tree $T_b$ is trained on a bootstrap sample of the training data and selects features randomly at each split to reduce overfitting.
+
+\subsubsection{Classification}
+
+For classification tasks, the RF classifier uses majority voting:
+\begin{equation}
+\hat{y} = \arg\max_{c} \sum_{b=1}^{B} \mathbf{1}[T_b(\mathbf{x}) = c]
+\end{equation}
+where $\mathbf{1}[\cdot]$ is the indicator function and $c$ is a class label.
+
+\subsection{Hyperparameters}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Number of estimators & 200 \\
+Max depth & None (unlimited) \\
+Random state & 42 \\
+Class weight (classification) & 'balanced' \\
+\bottomrule
+\end{tabular}
+\caption{Random Forest hyperparameters}
+\label{tab:hyperparams}
+\end{table}
+
+\section{Training Procedure}
+
+\subsection{Data Splitting}
+
+Sequences are split at the sequence level (not sample level) to prevent data leakage:
+\begin{equation}
+\mathcal{D}_{\text{train}} = 70\% \text{ of sequences}, \quad \mathcal{D}_{\text{test}} = 30\% \text{ of sequences}
+\end{equation}
+
+The random seed is fixed (seed=42) for reproducibility.
+
+\subsection{Feature Normalization}
+
+Features are standardized using StandardScaler:
+\begin{equation}
+\mathbf{x}_{\text{norm}} = \frac{\mathbf{x} - \boldsymbol{\mu}}{\boldsymbol{\sigma}}
+\end{equation}
+where $\boldsymbol{\mu}$ and $\boldsymbol{\sigma}$ are the mean and standard deviation computed on the training set.
+
+\subsection{Outlier Removal}
+
+Outliers are removed using Median Absolute Deviation (MAD) method:
+\begin{equation}
+\text{MAD} = \text{median}(|X_i - \text{median}(X)|)
+\end{equation}
+Sequences with modified z-scores exceeding a threshold ($z_{\text{thresh}} = 3.0$) are removed:
+\begin{equation}
+z_i = \frac{0.6745 \cdot (X_i - \text{median}(X))}{\text{MAD}}
+\end{equation}
+
+\section{Performance Metrics}
+
+\subsection{Regression Metrics}
+
+\subsubsection{Root Mean Squared Error (RMSE)}
+\begin{equation}
+\text{RMSE} = \sqrt{\frac{1}{N} \sum_{i=1}^{N} (y_i - \hat{y}_i)^2}
+\end{equation}
+
+\subsubsection{Coefficient of Determination (R²)}
+\begin{equation}
+R^2 = 1 - \frac{\sum_{i=1}^{N} (y_i - \hat{y}_i)^2}{\sum_{i=1}^{N} (y_i - \bar{y})^2}
+\end{equation}
+where $\bar{y} = \frac{1}{N}\sum_{i=1}^{N} y_i$ is the mean of the true values.
+
+\subsection{Classification Metrics}
+
+\subsubsection{Accuracy}
+\begin{equation}
+\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}
+\end{equation}
+where TP, TN, FP, FN are true positives, true negatives, false positives, and false negatives, respectively.
+
+\section{Code Architecture and Usage}
+
+\subsection{Repository Structure}
+
+The codebase is organized as follows:
+
+\begin{lstlisting}[language=bash]
+Mag_Tec_Models/
+├── src/
+│   ├── training/
+│   │   ├── train_best_models.py          # Main training script
+│   │   ├── train_separate_forces.py      # Separate force regressors
+│   │   ├── train_location_all_methods.py # Location classification
+│   │   └── train_combined_shear_normal.py # Utility functions
+│   ├── franka_controller/
+│   │   ├── franka_skin_test_multiple_points.py  # Normal force collection
+│   │   └── franka_skin_test_shear_forces.py     # Shear force collection
+│   └── ...
+├── data/
+│   └── Multiple_Points/
+│       ├── 2.5mm_single_test42/         # Normal forces dataset
+│       └── shear_forces_test51/          # Shear forces dataset
+│           └── best_models/
+│               └── best_models/
+│                   └── models/           # Trained models
+├── docs/
+│   └── model_documentation.tex           # This document
+└── README.md
+\end{lstlisting}
+
+\subsection{Command Line Interface}
+
+\subsubsection{Training Best Models}
+
+To train all models with optimal configurations:
+
+\begin{lstlisting}[language=bash]
+python3 src/training/train_best_models.py \
+    --normal-dir data/Multiple_Points/2.5mm_single_test42 \
+    --shear-dir data/Multiple_Points/shear_forces_test51 \
+    --run-label best_models \
+    --remove-outliers
+\end{lstlisting}
+
+\subsubsection{Training Separate Force Regressors}
+
+To train Fz, Fx, and Fy regressors separately:
+
+\begin{lstlisting}[language=bash]
+python3 src/training/train_separate_forces.py \
+    --normal-dir data/Multiple_Points/2.5mm_single_test42 \
+    --shear-dir data/Multiple_Points/shear_forces_test51 \
+    --run-label separate_forces \
+    --remove-outliers
+\end{lstlisting}
+
+\subsubsection{Training Location Classification}
+
+To train location classifiers with all feature methods:
+
+\begin{lstlisting}[language=bash]
+python3 src/training/train_location_all_methods.py \
+    --normal-dir data/Multiple_Points/2.5mm_single_test42 \
+    --shear-dir data/Multiple_Points/shear_forces_test51 \
+    --run-label location_all_methods \
+    --remove-outliers
+\end{lstlisting}
+
+\subsection{Data Collection}
+
+\subsubsection{Normal Forces Collection}
+
+\begin{lstlisting}[language=bash]
+python3 src/franka_controller/franka_skin_test_multiple_points.py
+\end{lstlisting}
+
+This script collects normal force data at 10 contact points plus no-touch sequences across 3 stretch levels.
+
+\subsubsection{Shear Forces Collection}
+
+\begin{lstlisting}[language=bash]
+python3 src/franka_controller/franka_skin_test_shear_forces.py
+\end{lstlisting}
+
+This script collects shear force data with movements in 4 directions (x+, x-, y+, y-) at each contact point.
+
+\subsection{Database Structure}
+
+\subsubsection{HDF5 File Format}
+
+Data is stored in HDF5 format with the following structure:
+
+\begin{lstlisting}[language=Python]
+h5_file/
+├── presses/
+│   ├── press_000/
+│   │   ├── forces          # [N, 6] array (Fx, Fy, Fz, Tx, Ty, Tz)
+│   │   ├── stretchmagtec   # [N, 15, 3] array (magnetic field data)
+│   │   ├── timestamps      # [N] array
+│   │   └── attributes:
+│   │       ├── label       # String identifier
+│   │       ├── offset      # Location ID ('1'-'10' or 'no_touch')
+│   │       └── stretch_label # '000pct', '010pct', '020pct'
+│   ├── press_001/
+│   └── ...
+└── labels/                 # [M] array of sequence labels
+\end{lstlisting}
+
+\subsubsection{Data Organization}
+
+\begin{itemize}
+    \item \textbf{Normal Forces}: One HDF5 file per stretch level
+    \begin{itemize}
+        \item \texttt{*\_stretch\_000pct.h5}
+        \item \texttt{*\_stretch\_010pct.h5}
+        \item \texttt{*\_stretch\_020pct.h5}
+    \end{itemize}
+    
+    \item \textbf{Shear Forces}: One HDF5 file per stretch level
+    \begin{itemize}
+        \item \texttt{*\_shear\_stretch\_000pct.h5}
+        \item \texttt{*\_shear\_stretch\_010pct.h5}
+        \item \texttt{*\_shear\_stretch\_020pct.h5}
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Sequence Metadata}
+
+Each sequence contains:
+\begin{itemize}
+    \item \textbf{Location}: Contact point ID ('1' through '10') or 'no\_touch'
+    \item \textbf{Stretch Level}: Material stretch percentage (0\%, 10\%, 20\%)
+    \item \textbf{Direction}: For shear forces, movement direction ('x+', 'x-', 'y+', 'y-')
+    \item \textbf{Sampling Rate}: 100 Hz
+    \item \textbf{Duration}: ~6 seconds per sequence
+\end{itemize}
+
+\section{Model Files}
+
+\subsection{Saved Models}
+
+Trained models are saved in Joblib format:
+
+\begin{itemize}
+    \item \texttt{fz\_regressor.joblib} - Fz force regressor
+    \item \texttt{fx\_regressor.joblib} - Fx force regressor
+    \item \texttt{fy\_regressor.joblib} - Fy force regressor
+    \item \texttt{location\_classifier.joblib} - Location classifier (raw features)
+    \item \texttt{stretch\_classifier.joblib} - Stretch level classifier
+\end{itemize}
+
+\subsection{Scalers}
+
+Feature scalers are saved separately:
+
+\begin{itemize}
+    \item \texttt{scaler\_fz.joblib} - Scaler for Fz regression features
+    \item \texttt{scaler\_fx.joblib} - Scaler for Fx regression features
+    \item \texttt{scaler\_fy.joblib} - Scaler for Fy regression features
+    \item \texttt{location\_scaler.joblib} - Scaler for location classification features
+    \item \texttt{stretch\_scaler.joblib} - Scaler for stretch classification features
+\end{itemize}
+
+\section{Results Summary}
+
+\subsection{Force Regression Performance}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Component} & \textbf{Dataset} & \textbf{RMSE [N]} & \textbf{R²} & \textbf{Train Seq} & \textbf{Test Seq} \\
+\midrule
+Fz & Normal only & 0.0854 & 0.9898 & 693 & 297 \\
+Fx & Shear only (x±) & 0.2021 & 0.9827 & 832 & 357 \\
+Fy & Shear only (y±) & 0.1512 & 0.9900 & 831 & 357 \\
+\bottomrule
+\end{tabular}
+\caption{Force regression performance}
+\label{tab:force_regression}
+\end{table}
+
+\subsection{Classification Performance}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{Task} & \textbf{Features} & \textbf{Accuracy [\%]} & \textbf{Train Seq} & \textbf{Test Seq} & \textbf{Classes} \\
+\midrule
+Location & Raw (45) & 99.59 & 893 & 383 & 11 \\
+Location & Magnitude (15) & 99.59 & 893 & 383 & 11 \\
+Stretch & Raw (45) & 99.30 & 893 & 383 & 3 \\
+\bottomrule
+\end{tabular}
+\caption{Classification performance}
+\label{tab:classification}
+\end{table}
+
+\section{Conclusion}
+
+The developed models achieve high accuracy across all tasks:
+\begin{itemize}
+    \item Fz regression: RMSE of \SI{0.0854}{\newton} with R² = 0.9898
+    \item Fx regression: RMSE of \SI{0.2021}{\newton} with R² = 0.9827
+    \item Fy regression: RMSE of \SI{0.1512}{\newton} with R² = 0.9900
+    \item Location classification: 99.59\% accuracy
+    \item Stretch classification: 99.30\% accuracy
+\end{itemize}
+
+The system demonstrates robust performance suitable for real-time tactile sensing applications in robotic manipulation.
+
+\section{Acknowledgments}
+
+This work was supported by the MagTec Models research project. The authors acknowledge the use of the Franka Emika Panda robotic platform and StretchMagTec sensor hardware.
+
+\end{document}
+

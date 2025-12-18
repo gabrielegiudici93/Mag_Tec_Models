@@ -1,0 +1,46 @@
+{
+  "run_label": "best_models",
+  "force_regression": {
+    "fz": {
+      "rmse": 0.08542565655174031,
+      "r2": 0.9898002851721474,
+      "n_train": 693,
+      "n_test": 297,
+      "dataset": "normal_forces_only",
+      "note": "NO baseline removal"
+    },
+    "fx": {
+      "rmse": 0.2021156901537818,
+      "r2": 0.9827207497333087,
+      "n_train": 832,
+      "n_test": 357,
+      "dataset": "shear_forces_only_x_directions"
+    },
+    "fy": {
+      "rmse": 0.1511929427668605,
+      "r2": 0.9900379118706949,
+      "n_train": 831,
+      "n_test": 357,
+      "dataset": "shear_forces_only_y_directions"
+    }
+  },
+  "location_classification": {
+    "raw": {
+      "accuracy": 0.9959360251704248,
+      "n_train": 893,
+      "n_test": 383
+    },
+    "magnitude": {
+      "accuracy": 0.9959360251704248,
+      "n_train": 893,
+      "n_test": 383
+    }
+  },
+  "stretch_classification": {
+    "accuracy": 0.9929863660199266,
+    "n_train": 893,
+    "n_test": 383,
+    "feature_method": "raw"
+  },
+  "best_location_method": "raw"
+}
