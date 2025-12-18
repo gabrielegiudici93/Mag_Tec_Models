@@ -1,0 +1,35 @@
+{
+  "run_label": "location_all_methods",
+  "normal_sequences_per_stretch": {
+    "000pct": 330,
+    "010pct": 330,
+    "020pct": 330
+  },
+  "shear_sequences_per_stretch": {
+    "000pct": 800,
+    "010pct": 786,
+    "020pct": 791
+  },
+  "combined_sequences_per_stretch": {
+    "000pct": 1130,
+    "010pct": 1116,
+    "020pct": 1121
+  },
+  "results": {
+    "raw": {
+      "accuracy": 0.9959360251704248,
+      "n_train": 893,
+      "n_test": 383
+    },
+    "magnitude": {
+      "accuracy": 0.9959360251704248,
+      "n_train": 893,
+      "n_test": 383
+    },
+    "magnitude_normalized": {
+      "accuracy": 0.9884198566684146,
+      "n_train": 893,
+      "n_test": 383
+    }
+  }
+}

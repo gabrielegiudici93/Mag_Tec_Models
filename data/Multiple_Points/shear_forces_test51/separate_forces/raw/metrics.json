@@ -1,0 +1,27 @@
+{
+  "run_label": "separate_forces_final_v3",
+  "feature_method": "raw",
+  "fz_regression": {
+    "rmse": 0.08542565655174032,
+    "r2": 0.9898002851721474,
+    "n_train": 693,
+    "n_test": 297,
+    "dataset": "normal_forces_only"
+  },
+  "fx_regression": {
+    "rmse": 0.2021156901537818,
+    "r2": 0.9827207497333087,
+    "n_train": 832,
+    "n_test": 357,
+    "dataset": "shear_forces_only_x_directions",
+    "note": "Trained only on x+ and x- sequences"
+  },
+  "fy_regression": {
+    "rmse": 0.1511929427668605,
+    "r2": 0.9900379118706949,
+    "n_train": 831,
+    "n_test": 357,
+    "dataset": "shear_forces_only_y_directions",
+    "note": "Trained only on y+ and y- sequences"
+  }
+}
