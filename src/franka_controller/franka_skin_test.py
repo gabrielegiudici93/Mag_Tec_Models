@@ -470,33 +470,42 @@ def parse_stretchmagtec_line(line):
         # Try original format: "S1: X=1234 Y=5678 Z=9012 | S2: X=2345 Y=6789 Z=0123 | ..."
         elif ' | ' in line:
             sensor_parts = line.split(' | ')
-            if len(sensor_parts) >= STRETCHMAGTEC_SENSORS:
-                for i, sensor_part in enumerate(sensor_parts[:STRETCHMAGTEC_SENSORS]):
-                    sensor_part = sensor_part.strip()
-                    if ':' not in sensor_part:
-                        continue
-                        
-                    values_part = sensor_part.split(':', 1)[1].strip()
+            # Parse what we can, even if line is truncated (don't require all 15 sensors)
+            parsed_count = 0
+            for i, sensor_part in enumerate(sensor_parts[:STRETCHMAGTEC_SENSORS]):
+                sensor_part = sensor_part.strip()
+                if ':' not in sensor_part:
+                    continue
                     
-                    coords = {'X': 0, 'Y': 0, 'Z': 0}
-                    for coord_pair in values_part.split():
-                        if '=' in coord_pair:
-                            coord, value = coord_pair.split('=', 1)
-                            if coord in coords:
-                                try:
-                                    coords[coord] = float(value)
-                                except ValueError:
-                                    coords[coord] = 0
-                    
+                values_part = sensor_part.split(':', 1)[1].strip()
+                
+                coords = {'X': 0, 'Y': 0, 'Z': 0}
+                for coord_pair in values_part.split():
+                    if '=' in coord_pair:
+                        coord, value = coord_pair.split('=', 1)
+                        if coord in coords:
+                            try:
+                                coords[coord] = float(value)
+                            except ValueError:
+                                coords[coord] = 0
+                
+                # Only set values if we got at least X and Y (Z might be missing in truncated lines)
+                if coords['X'] != 0 or coords['Y'] != 0 or coords['Z'] != 0:
                     sensor_values[i, 0] = coords['X']
                     sensor_values[i, 1] = coords['Y'] 
                     sensor_values[i, 2] = coords['Z']
+                    parsed_count += 1
+            
+            # If we didn't parse at least a few sensors, the line is probably too corrupted
+            if parsed_count < 3:
+                return None
         
         # Check for saturation values (65535 or close to it) - these indicate corrupted data
         # Typical valid sensor values are in range -50000 to 50000, saturation is 65535
+        # Only reject if MOST sensors are saturated (not just one initialization value)
         SATURATION_THRESHOLD = 60000  # Values above this are likely saturation/corruption
-        if np.any(np.abs(sensor_values) > SATURATION_THRESHOLD):
-            # If any sensor shows saturation, reject the entire reading
+        saturated_count = np.sum(np.any(np.abs(sensor_values) > SATURATION_THRESHOLD, axis=1))
+        if saturated_count > STRETCHMAGTEC_SENSORS // 2:  # If more than half are saturated, reject
             return None
         
         # Apply threshold filter
@@ -504,7 +513,13 @@ def parse_stretchmagtec_line(line):
         return sensor_values
         
     except Exception as e:
-        print(f"Error parsing StretchMagTec data: {e}")
+        # Only print parse errors occasionally to avoid spam
+        if not hasattr(parse_stretchmagtec_line, '_error_count'):
+            parse_stretchmagtec_line._error_count = 0
+        if parse_stretchmagtec_line._error_count < 3:
+            print(f"[DEBUG] Error parsing StretchMagTec data: {e}")
+            print(f"[DEBUG] Line was: {line[:200] if 'line' in locals() else 'N/A'}")
+            parse_stretchmagtec_line._error_count += 1
         return None
 
 class StretchMagTecSerialReader(threading.Thread):
@@ -609,31 +624,48 @@ class StretchMagTecSerialReader(threading.Thread):
             
             self.ser = serial.Serial(self.port, self.baud, timeout=1)
             time.sleep(2)  # Wait for Arduino to initialize
-            
-            # Flush any existing data in the buffer to avoid reading stale/corrupted data
-            # This prevents saturation values (65535) from old data
+            # Flush any initial garbage data
             self.ser.reset_input_buffer()
+            print(f"✅ StretchMagTec sensor connected to {self.port} at {self.baud} baud. Starting data collection...")
             
-            # Read and discard first few lines after flush to ensure we get fresh data
-            # This is critical to avoid reading corrupted/saturated values
-            print(f"✅ StretchMagTec sensor connected to {self.port} at {self.baud} baud (flushing initial data)...")
-            for _ in range(10):  # Discard first 10 lines
-                try:
-                    if self.ser.in_waiting > 0:
-                        self.ser.readline()  # Read and discard
-                except:
-                    pass
-                time.sleep(0.1)  # Small delay between reads
-            
-            # Final flush to ensure clean buffer
-            self.ser.reset_input_buffer()
-            print(f"✅ Buffer flushed and initial data discarded. Starting data collection...")
+            # Debug: check if we're receiving data
+            self._no_data_count = 0
+            self._data_received_count = 0
             
             while self.running and not shutdown_requested:
                 if self.ser.in_waiting > 0:
-                    line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                    self._data_received_count += 1
+                    if self._data_received_count <= 3:
+                        print(f"[DEBUG] Data available! in_waiting={self.ser.in_waiting} bytes")
+                    
+                    # Read line with timeout handling
+                    try:
+                        line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                        # Skip empty lines
+                        if not line:
+                            continue
+                    except Exception as e:
+                        if not hasattr(self, '_read_error_count'):
+                            self._read_error_count = 0
+                        if self._read_error_count < 3:
+                            print(f"[DEBUG] Error reading serial line: {e}")
+                            self._read_error_count += 1
+                        continue
+                    
+                    # Debug: print raw line (first few times only)
+                    if not hasattr(self, '_debug_count'):
+                        self._debug_count = 0
+                    if self._debug_count < 5:
+                        print(f"[DEBUG] Raw serial line {self._debug_count + 1}: {line[:200]}")  # First 200 chars
+                        self._debug_count += 1
                     sensor_values = parse_stretchmagtec_line(line)
                     if sensor_values is not None:
+                        # Debug: print successful parse (first few times only)
+                        if not hasattr(self, '_debug_parse_count'):
+                            self._debug_parse_count = 0
+                        if self._debug_parse_count < 3:
+                            print(f"[DEBUG] Parsed successfully! Non-zero values: {np.count_nonzero(np.abs(sensor_values) > 1.0)}")
+                            self._debug_parse_count += 1
                         # Apply median filter to remove transient spikes (especially during robot movement)
                         filtered_values = np.zeros_like(sensor_values)
                         
@@ -697,6 +729,8 @@ class StretchMagTecSerialReader(threading.Thread):
                             # Update last_valid outside lock to avoid blocking
                             self.last_valid = filtered_values.copy()
                             stretchmagtec_ready_event.set()
+                # Note: No data available - this is normal if Arduino is not sending continuously
+                # Removed verbose debug message to reduce noise
                 
                 # Small sleep to avoid CPU spinning, but check shutdown
                 if shutdown_requested:

@@ -1,0 +1,6 @@
+Test 6: Application of normal force 0–3 N.
+A normal force in the range of 0 to 3 N is applied, using the experimental data provided by Gabriele. The test consists of 30 presses, each containing approximately muchas force samples, and is conducted at each of the five specified points and for the three stretch levels: 0%, 10%, and 20%.
+
+Input data : /home/benjamin/Repos/Mag_Tec_Models/data/Single_Point/force_0.0to3.0N_step0.1N_single_test50/cleaned/data
+
+I collected the data after waiting 30 frames to allow the simulation to converge; these will be the datasets used. In addition, I saved the data using the script modified by Gabriele. The data collection was performed on Friday, 12/12.

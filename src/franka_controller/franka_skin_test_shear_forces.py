@@ -90,32 +90,24 @@ MULTI_POINT_OFFSETS = {
 TARGET_OFFSETS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']  # Only the 10 multi-points
 
 # Stretch levels to test (percentages expressed as decimal fractions)
-STRETCH_LEVELS = [0.0, 0.10, 0.20]  # 0%, 10%, 20% stretch
+STRETCH_LEVELS = [0.20]  # 10% stretch (modify to add more: [0.0, 0.10, 0.20] for 0%, 10%, 20%)
 PROMPT_FOR_STRETCH = True  # Prompt operator before each stretch run
 
 # Shear force collection parameters
-FZ_TARGET = 2.0  # Target Fz force (N) - will press until Fz = -2.0N
-FX_TARGET = 1.0  # Target Fx force (N) - positive and negative
-FY_TARGET = 1.0  # Target Fy force (N) - positive and negative
-FORCE_TOLERANCE = 0.1  # Tolerance for force control (N)
-MAX_INDENTATION = 0.005  # Maximum indentation (m) - 5mm
-MAX_SHEAR_DISPLACEMENT = 0.005  # Maximum displacement in shear direction (m) - 5mm
-DATA_COLLECTION_DURATION = 0.5  # Duration to collect data after reaching target force (s)
-MOVEMENTS_PER_DIRECTION = 33  # Total movements per direction (30 final after removing first + 2 worst)
-MOVEMENTS_PER_DIRECTION = 33  # Total movements per direction (30 final after removing first + 2 worst)
+FZ_TARGET = 3.0  # Target Fz force (N) - will press until Fz = -3.0N
+MAX_INDENTATION = 0.005  # Maximum indentation (m) - 5mm (for initial press)
+SHEAR_DISPLACEMENT = 0.0025  # Lateral displacement in each direction (m) - 2.5mm (position control)
+WAIT_AFTER_DISPLACEMENT = 0.1  # Wait time after reaching target displacement (s) - data collected during movement
+MOVEMENTS_PER_DIRECTION = 23  # Total movements per direction (23 movements per direction)
 
-# Shear sequences: (direction, target_force)
+# Shear sequences: (direction)
 # direction: 'x+', 'x-', 'y+', 'y-'
-# Note: Robot movement direction is inverted relative to FT sensor:
-# - Moving in x+ produces negative Fx, so to get Fx = +1N we move in x- (which produces positive Fx)
-# - Moving in x- produces positive Fx, so to get Fx = -1N we move in x+ (which produces negative Fx)
-# - Moving in y+ produces positive Fy, so to get Fy = +1N we move in y+ (which produces positive Fy)
-# - Moving in y- produces negative Fy, so to get Fy = -1N we move in y- (which produces negative Fy)
+# Uses position control: moves exactly 5mm in each direction after pressing to 3N
 SHEAR_SEQUENCES = [
-    ('x-', FX_TARGET),    # Move in -X direction until Fx = +1N (x- produces positive Fx)
-    ('x+', -FX_TARGET),   # Move in +X direction until Fx = -1N (x+ produces negative Fx)
-    ('y+', FY_TARGET),    # Move in +Y direction until Fy = +1N (y+ produces positive Fy)
-    ('y-', -FY_TARGET),   # Move in -Y direction until Fy = -1N (y- produces negative Fy)
+    ('x+',),    # Move +2.5mm in X direction
+    ('x-',),    # Move -2.5mm in X direction
+    ('y+',),    # Move +2.5mm in Y direction
+    ('y-',),    # Move -2.5mm in Y direction
 ]
 
 # GUI flag (set False to disable visualization)
@@ -147,7 +139,7 @@ print(f"Target position ID: {TARGET_POSITION_ID}")
 print(f"Offsets under test: {', '.join(TARGET_OFFSETS)}")
 print(f"Base coordinates: {TARGET_POSITION_COORDS}")
 print(f"Shear sequences per point: {len(SHEAR_SEQUENCES)}")
-print(f"Fz target: {FZ_TARGET}N, Fx/Fy target: ±{FX_TARGET}N")
+print(f"Fz target: {FZ_TARGET}N, Lateral displacement: ±{SHEAR_DISPLACEMENT*1000:.1f}mm (position control)")
 print(f"Stretch levels configured: {', '.join(f'{int(s*100)}%' for s in STRETCH_LEVELS)}")
 print("=" * 70 + "\n")
 
@@ -453,7 +445,7 @@ def explore_offsets():
 
             print(f"→ Moving to offset '{offset_key}' at "
                   f"[{target[0]:.6f}, {target[1]:.6f}, {target[2]:.6f}]")
-            robot.move("absolute", pose, config.ABSOLUTE_MOVEMENT_DURATION)
+            safe_robot_move(robot, "absolute", pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
 
             user_input = input("   Press Enter to continue, or type 'skip' to stop exploration: ").strip()
             if user_input.lower() == "skip":
@@ -464,7 +456,7 @@ def explore_offsets():
         centre_pose = np.eye(4)
         centre_pose[:3, :3] = rotation_matrix
         centre_pose[:3, 3] = base_position
-        robot.move("absolute", centre_pose, config.ABSOLUTE_MOVEMENT_DURATION)
+        safe_robot_move(robot, "absolute", centre_pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
         print("Exploration complete. Robot returned to centre.\n")
 
     except Exception as exc:
@@ -539,8 +531,7 @@ def configure_for_stretch(stretch_value: float, stretch_label: str, run_root: Pa
     config.CURRENT_PRESS_PROFILE = "shear_force_3d"
     config.CURRENT_PRESS_SETTINGS = {
         "fz_target": FZ_TARGET,
-        "fx_target": FX_TARGET,
-        "fy_target": FY_TARGET,
+        "shear_displacement": SHEAR_DISPLACEMENT,
         "shear_sequences": len(SHEAR_SEQUENCES),
     }
     config.CURRENT_STRETCH_INDEX = stretch_idx
@@ -727,11 +718,60 @@ ft_data_ready_event = skin_test_module.ft_data_ready_event
 # SHEAR FORCE COLLECTION FUNCTIONS
 # =============================================================================
 
-def press_to_fz(r, ft_thread, target_fz, initial_z=None, max_iterations=500):
-    """Press down until Fz reaches -target_fz (negative value, e.g., -2N for target_fz=2N).
-    Respects MAX_INDENTATION limit (5mm).
+def safe_robot_move(r, move_type, target, duration=None, max_retries=3):
     """
-    target_fz_negative = -abs(target_fz)  # Target is negative (e.g., -2N for target_fz=2N)
+    Safely move robot with retry logic for reflex errors.
+    Waits for user to accept/unlock robot if reflex appears.
+    
+    Args:
+        r: Robot instance
+        move_type: "absolute" or "relative"
+        target: Target pose (4x4 matrix for absolute) or delta transform (4x4 matrix for relative)
+        duration: Movement duration (optional)
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Returns:
+        True if movement succeeded, False otherwise
+    
+    Raises:
+        Exception: If movement fails after all retries (non-reflex errors)
+    """
+    for attempt in range(max_retries):
+        try:
+            if duration is not None:
+                r.move(move_type, target, duration)
+            else:
+                r.move(move_type, target)
+            return True
+        except Exception as e:
+            error_str = str(e)
+            print(f"   ❌ Movement attempt {attempt + 1}/{max_retries} failed: {error_str}")
+            
+            # Check if it's a reflex mode error
+            if "Reflex" in error_str or "reflex" in error_str.lower():
+                print("   🛑 Robot in reflex mode (safety stop).")
+                print("   🔓 Please unlock the safety button on the robot and reset it, then press Enter to continue...")
+                try:
+                    input()  # Wait for user to press Enter
+                    print("   ✅ Robot reset acknowledged, retrying movement...")
+                    time.sleep(3)  # Give robot time to fully reset
+                except KeyboardInterrupt:
+                    print("   ⚠️  User interrupted during reflex recovery.")
+                    raise
+            elif attempt < max_retries - 1:
+                print(f"   🔄 Retrying in 2 seconds...")
+                time.sleep(2)
+            else:
+                print(f"   ❌ Failed to complete movement after {max_retries} attempts")
+                raise
+    return False
+
+
+def press_to_fz(r, ft_thread, target_fz, initial_z=None, max_iterations=500):
+    """Press down until Fz reaches -target_fz (negative value, e.g., -3N for target_fz=3N).
+    No indentation limit - will continue until target force is reached.
+    """
+    target_fz_negative = -abs(target_fz)  # Target is negative (e.g., -3N for target_fz=3N)
     
     # Get initial Z position if not provided
     if initial_z is None:
@@ -746,14 +786,10 @@ def press_to_fz(r, ft_thread, target_fz, initial_z=None, max_iterations=500):
         current_fx = current_ft[0]
         current_fy = current_ft[1]
         
-        # Check indentation limit (5mm)
+        # Get current position for display
         current_state = r.getState()
         current_pos = current_state.T[:3, 3]
         current_indentation = initial_z - current_pos[2]  # Positive = indentation
-        
-        if current_indentation >= MAX_INDENTATION:
-            print(f"    ⚠️  Maximum indentation reached ({current_indentation*1000:.2f}mm >= {MAX_INDENTATION*1000:.2f}mm)")
-            return True
         
         # Print forces every 10 iterations
         if iteration % 10 == 0:
@@ -770,99 +806,114 @@ def press_to_fz(r, ft_thread, target_fz, initial_z=None, max_iterations=500):
         target_pose = current_state.T.copy()
         target_pose[:3, 3] = target_pos
         
-        r.move("absolute", target_pose, 0.1)
+        safe_robot_move(r, "absolute", target_pose, duration=0.1)
         time.sleep(0.01)
     
     print(f"    ⚠️  Maximum iterations reached. Final Fz: {current_fz:.3f}N, Fx: {current_fx:.3f}N, Fy: {current_fy:.3f}N")
     return False
 
-def move_to_shear_force(r, ft_thread, direction, target_force, maintain_fz, start_position, max_iterations=500):
-    """Move robot in X or Y direction until target shear force is reached, while maintaining Fz.
-    Returns (success, final_position, total_displacement).
+def move_to_shear_position(r, ft_thread, stretchmagtec_reader, ft_calibration, stretchmagtec_calibration, 
+                          direction, maintain_fz, start_position, shear_data):
+    """Move robot exactly 2.5mm in X or Y direction using position control, while maintaining Fz.
+    Collects data during the entire movement.
+    Returns (success, final_position, displacement).
     
-    Note: Robot movement direction is inverted relative to FT sensor readings:
-    - Moving in x+ produces negative Fx
-    - Moving in x- produces positive Fx
-    - Moving in y+ produces negative Fy
-    - Moving in y- produces positive Fy
+    Args:
+        r: Robot instance
+        ft_thread: FT sensor thread
+        stretchmagtec_reader: StretchMagTec reader
+        ft_calibration: FT calibration object
+        stretchmagtec_calibration: StretchMagTec calibration object
+        direction: 'x+', 'x-', 'y+', 'y-' - direction to move
+        maintain_fz: Target Fz force to maintain (N) - will try to keep Fz at this value
+        start_position: Starting position [x, y, z]
+        shear_data: Dictionary to append collected data to
+    
+    Returns:
+        (success, final_position, displacement)
     """
-    iteration = 0
-    for _ in range(max_iterations):
-        iteration += 1
+    current_state = r.getState()
+    current_pos = current_state.T[:3, 3].copy()
+    
+    # Determine axis and displacement direction
+    if direction == 'x+' or direction == 'x-':
+        axis_idx = 0
+        displacement = SHEAR_DISPLACEMENT if direction == 'x+' else -SHEAR_DISPLACEMENT
+    elif direction == 'y+' or direction == 'y-':
+        axis_idx = 1
+        displacement = SHEAR_DISPLACEMENT if direction == 'y+' else -SHEAR_DISPLACEMENT
+    else:
+        print(f"    ⚠️  Invalid direction: {direction}")
+        return False, current_pos, 0.0
+        
+    # Calculate target position
+    target_pos = current_pos.copy()
+    target_pos[axis_idx] = start_position[axis_idx] + displacement
+    
+    print(f"    Moving {direction} by {abs(displacement)*1000:.2f}mm (position control, collecting data during movement)...")
+        
+    # Move in steps while maintaining Fz and collecting data
+    maintain_fz_negative = -abs(maintain_fz)  # Target is negative (e.g., -3N for maintain_fz=3N)
+    num_steps = 50  # Move in 50 steps for smooth movement
+    step_size = displacement / num_steps
+    
+    for step_idx in range(num_steps):
+        # Get current Fz
         current_ft = ft_thread.get_ft()
-        current_fx = current_ft[0]
-        current_fy = current_ft[1]
         current_fz = current_ft[2]
         
-        if direction == 'x+' or direction == 'x-':
-            current_force = current_ft[0]  # Fx
-            axis_idx = 0
-            # Normal step: x+ moves in +X, x- moves in -X
-            step = 0.0001 if direction == 'x+' else -0.0001
-        elif direction == 'y+' or direction == 'y-':
-            current_force = current_ft[1]  # Fy
-            axis_idx = 1
-            # Normal step: y+ moves in +Y, y- moves in -Y
-            step = 0.0001 if direction == 'y+' else -0.0001
-        else:
-            return False, None, 0.0
+        # Calculate intermediate position
+        intermediate_pos = current_pos.copy()
+        intermediate_pos[axis_idx] = start_position[axis_idx] + step_size * (step_idx + 1)
         
-        # Check displacement limit (5mm)
-        current_state = r.getState()
-        current_pos = current_state.T[:3, 3]
-        displacement = abs(current_pos[axis_idx] - start_position[axis_idx])
-        
-        if displacement >= MAX_SHEAR_DISPLACEMENT:
-            print(f"    ⚠️  Maximum displacement reached ({displacement*1000:.2f}mm >= {MAX_SHEAR_DISPLACEMENT*1000:.2f}mm)")
-            return True, current_pos.copy(), displacement
-        
-        # Print forces every 10 iterations
-        if iteration % 10 == 0:
-            print(f"    {direction}: {current_force:.3f}N (target: {target_force:.3f}N), Fz: {current_fz:.3f}N, Displacement: {displacement*1000:.2f}mm")
-        
-        # Check if target force reached
-        # For positive targets: check if current_force >= target_force
-        # For negative targets: check if current_force <= target_force
-        if target_force >= 0:
-            # Positive target (e.g., +1N)
-            if current_force >= target_force:
-                print(f"    ✅ Target {direction} reached: {current_force:.3f}N, Displacement: {displacement*1000:.2f}mm")
-                return True, current_pos.copy(), displacement
-        else:
-            # Negative target (e.g., -1N)
-            if current_force <= target_force:
-                print(f"    ✅ Target {direction} reached: {current_force:.3f}N, Displacement: {displacement*1000:.2f}mm")
-                return True, current_pos.copy(), displacement
-        
-        # Move in the direction
-        target_pos = current_pos.copy()
-        target_pos[axis_idx] += step
-        
-        # Try to maintain Fz by adjusting Z slightly (using negative values)
-        maintain_fz_negative = -abs(maintain_fz)  # Target is negative (e.g., -2N for maintain_fz=2N)
-        
+        # Try to maintain Fz by adjusting Z slightly
         # If Fz is less negative than target (closer to zero), move down
-        if current_fz > maintain_fz_negative * 0.9:  # current_fz is less negative (e.g., -1.0N vs -2N)
-            target_pos[2] -= 0.00005  # Move down slightly (Z negative = down, increases negative Fz)
+        if current_fz > maintain_fz_negative * 0.9:  # current_fz is less negative (e.g., -2.0N vs -3N)
+            intermediate_pos[2] -= 0.00005  # Move down slightly (Z negative = down, increases negative Fz)
         # If Fz is more negative than target (too much force), move up
-        elif current_fz < maintain_fz_negative * 1.1:  # current_fz is more negative (e.g., -2.5N vs -2N)
-            target_pos[2] += 0.00005  # Move up slightly (Z positive = up, decreases negative Fz)
+        elif current_fz < maintain_fz_negative * 1.1:  # current_fz is more negative (e.g., -3.5N vs -3N)
+            intermediate_pos[2] += 0.00005  # Move up slightly (Z positive = up, decreases negative Fz)
         
+        # Move to intermediate position
         target_pose = current_state.T.copy()
-        target_pose[:3, 3] = target_pos
-        
-        r.move("absolute", target_pose, 0.1)
+        target_pose[:3, 3] = intermediate_pos
+        safe_robot_move(r, "absolute", target_pose, duration=0.1)
         time.sleep(0.01)
     
-    print(f"    ⚠️  Maximum iterations reached. Displacement: {displacement*1000:.2f}mm")
-    return False, current_pos.copy(), displacement
+        # Collect data during movement
+        raw_ft = ft_thread.get_ft()
+        compensated_ft = ft_calibration.compensate_force(raw_ft) if ft_calibration else raw_ft
+        current_state = r.getState()
+        current_pos = current_state.T[:3, 3]
+        
+        shear_data['forces'].append(compensated_ft.copy())
+        shear_data['positions'].append(current_pos.copy())
+        shear_data['timestamps'].append(time.time())
+        
+        # Get StretchMagTec data and apply calibration
+        raw_stretch_data = read_stretchmagtec_data()
+        if raw_stretch_data is not None:
+            compensated_stretch = stretchmagtec_calibration.compensate_sensors(raw_stretch_data) if stretchmagtec_calibration else raw_stretch_data
+        else:
+            compensated_stretch = np.zeros((config.STRETCHMAGTEC_SENSORS, config.STRETCHMAGTEC_CHANNELS))
+        shear_data['stretchmagtec'].append(compensated_stretch.copy())
+    
+    # Final position
+    final_state = r.getState()
+    final_pos = final_state.T[:3, 3].copy()
+    actual_displacement = abs(final_pos[axis_idx] - start_position[axis_idx])
+    
+    current_ft = ft_thread.get_ft()
+    print(f"    ✅ Moved {direction} by {actual_displacement*1000:.2f}mm, Fz: {current_ft[2]:.3f}N, Fx: {current_ft[0]:.3f}N, Fy: {current_ft[1]:.3f}N")
+    
+    return True, final_pos, actual_displacement
 
 def return_to_center(r, target_pos):
     """Return robot to center position (target_pos)."""
     current_state = r.getState()
     current_pose = current_state.T.copy()
     current_pose[:3, 3] = target_pos
-    r.move("absolute", current_pose, config.ABSOLUTE_MOVEMENT_DURATION)
+    safe_robot_move(r, "absolute", current_pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
     time.sleep(0.5)
 
 def return_by_displacement(r, direction, displacement):
@@ -892,7 +943,7 @@ def return_by_displacement(r, direction, displacement):
     
     target_pose = current_state.T.copy()
     target_pose[:3, 3] = target_pos
-    r.move("absolute", target_pose, config.ABSOLUTE_MOVEMENT_DURATION)
+    safe_robot_move(r, "absolute", target_pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
     time.sleep(0.5)
 
 def identify_shear_outliers(movements, z_threshold=3.0):
@@ -987,7 +1038,7 @@ def lift_robot(r, target_pos, lift_height=0.005):
     lift_pos[2] += lift_height
     lift_pose = current_state.T.copy()
     lift_pose[:3, 3] = lift_pos
-    r.move("absolute", lift_pose, config.ABSOLUTE_MOVEMENT_DURATION)
+    safe_robot_move(r, "absolute", lift_pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
     time.sleep(0.5)
 
 def collect_shear_data_for_point(r, ft_thread, stretchmagtec_reader, ft_calibration, stretchmagtec_calibration, 
@@ -1010,25 +1061,26 @@ def collect_shear_data_for_point(r, ft_thread, stretchmagtec_reader, ft_calibrat
     pose = np.eye(4)
     pose[:3, :3] = rotation_matrix
     pose[:3, 3] = target_pos
-    r.move("absolute", pose, config.ABSOLUTE_MOVEMENT_DURATION)
+    safe_robot_move(r, "absolute", pose, duration=config.ABSOLUTE_MOVEMENT_DURATION)
     time.sleep(1.0)  # Wait for stabilization
     
     # Get initial Z position for indentation limit
     initial_state = r.getState()
     initial_z = initial_state.T[2, 3]
     
-    for seq_idx, (direction, target_force) in enumerate(SHEAR_SEQUENCES):
+    for seq_idx, seq_tuple in enumerate(SHEAR_SEQUENCES):
+        direction = seq_tuple[0]  # Extract direction from tuple
         print(f"\n{'='*70}")
-        print(f"  Direction {seq_idx + 1}/{len(SHEAR_SEQUENCES)}: {direction} to {target_force:.1f}N")
+        print(f"  Direction {seq_idx + 1}/{len(SHEAR_SEQUENCES)}: {direction} (position control: {SHEAR_DISPLACEMENT*1000:.1f}mm)")
         print(f"{'='*70}")
         
         # Press once to Fz target (before all movements in this direction)
-        print(f"  Pressing to {FZ_TARGET}N on Fz (max indentation: {MAX_INDENTATION*1000:.1f}mm)...")
+        print(f"  Pressing to {FZ_TARGET}N on Fz (no indentation limit)...")
         if not press_to_fz(r, ft_thread, FZ_TARGET, initial_z=initial_z):
             print(f"  ⚠️  Failed to reach {FZ_TARGET}N on Fz, skipping direction {direction}")
             continue
         
-        # Collect 33 movements for this direction
+        # Collect movements for this direction
         movements = []
         for mov_idx in range(MOVEMENTS_PER_DIRECTION):
             print(f"\n  Movement {mov_idx + 1}/{MOVEMENTS_PER_DIRECTION} in {direction}")
@@ -1037,21 +1089,26 @@ def collect_shear_data_for_point(r, ft_thread, stretchmagtec_reader, ft_calibrat
             start_state = r.getState()
             start_position = start_state.T[:3, 3].copy()
             
-            # Move to shear force (with displacement limit)
-            print(f"    Moving in {direction} to {target_force:.1f}N (max displacement: {MAX_SHEAR_DISPLACEMENT*1000:.1f}mm)...")
-            success, final_position, displacement = move_to_shear_force(r, ft_thread, direction, target_force, FZ_TARGET, start_position)
+            # Initialize data collection dictionary
+            shear_data = {'forces': [], 'positions': [], 'timestamps': [], 'stretchmagtec': []}
+            
+            # Move to shear position (position control: exactly 2.5mm) - data collected during movement
+            success, final_position, displacement = move_to_shear_position(
+                r, ft_thread, stretchmagtec_reader, ft_calibration, stretchmagtec_calibration,
+                direction, FZ_TARGET, start_position, shear_data
+            )
             
             if not success:
-                print(f"    ⚠️  Failed to reach target force, skipping this movement")
+                print(f"    ⚠️  Failed to move to target position, skipping this movement")
                 # Return to start position anyway
                 return_by_displacement(r, direction, displacement)
                 continue
             
-            # Collect data during shear
-            shear_data = {'forces': [], 'positions': [], 'timestamps': [], 'stretchmagtec': []}
-            start_time = time.time()
-            while time.time() - start_time < DATA_COLLECTION_DURATION:
-                # Get FT data and apply calibration
+            # Wait 0.1 seconds at target position (still collecting data)
+            print(f"    Waiting {WAIT_AFTER_DISPLACEMENT}s at target position...")
+            wait_start_time = time.time()
+            while time.time() - wait_start_time < WAIT_AFTER_DISPLACEMENT:
+                # Continue collecting data during wait
                 raw_ft = ft_thread.get_ft()
                 compensated_ft = ft_calibration.compensate_force(raw_ft) if ft_calibration else raw_ft
                 current_state = r.getState()
@@ -1062,7 +1119,7 @@ def collect_shear_data_for_point(r, ft_thread, stretchmagtec_reader, ft_calibrat
                 shear_data['timestamps'].append(time.time())
                 
                 # Get StretchMagTec data and apply calibration
-                raw_stretch_data = read_stretchmagtec_data()
+                raw_stretch_data = skin_test_module.read_stretchmagtec_data()
                 if raw_stretch_data is not None:
                     compensated_stretch = stretchmagtec_calibration.compensate_sensors(raw_stretch_data) if stretchmagtec_calibration else raw_stretch_data
                 else:
@@ -1078,18 +1135,22 @@ def collect_shear_data_for_point(r, ft_thread, stretchmagtec_reader, ft_calibrat
             
             movements.append({
                 'direction': direction,
-                'target_force': target_force,
                 'displacement': displacement,
                 'shear_data': shear_data,
             })
         
-        # Remove first movement + 2 worst outliers
-        print(f"\n  Removing outliers from {len(movements)} movements...")
-        outlier_indices = identify_shear_outliers(movements)
-        print(f"  Removing {len(outlier_indices)} movements (indices: {outlier_indices})")
-        
-        cleaned_movements = [mov for idx, mov in enumerate(movements) if idx not in outlier_indices]
-        print(f"  Kept {len(cleaned_movements)} movements after outlier removal")
+        # Remove first movement + 2 worst outliers (skip if only 1 movement for testing)
+        if len(movements) > 1:
+            print(f"\n  Removing outliers from {len(movements)} movements...")
+            outlier_indices = identify_shear_outliers(movements)
+            print(f"  Removing {len(outlier_indices)} movements (indices: {outlier_indices})")
+            
+            cleaned_movements = [mov for idx, mov in enumerate(movements) if idx not in outlier_indices]
+            print(f"  Kept {len(cleaned_movements)} movements after outlier removal")
+        else:
+            # For testing with <= 2 movements, keep all movements
+            print(f"\n  Testing mode: Keeping all {len(movements)} movement(s) (no outlier removal)")
+            cleaned_movements = movements
         
         # Add cleaned movements to all_sequences
         all_sequences.extend(cleaned_movements)
@@ -1140,11 +1201,22 @@ def save_shear_data_to_h5(output_file, sequences_by_point, stretch_value, stretc
         
         for point_name, sequences in sequences_by_point.items():
             for seq_idx, seq_data in enumerate(sequences):
-                # Combine press and shear data into one sequence
-                combined_forces = seq_data['press_data']['forces'] + seq_data['shear_data']['forces']
-                combined_positions = seq_data['press_data']['positions'] + seq_data['shear_data']['positions']
-                combined_timestamps = seq_data['press_data']['timestamps'] + seq_data['shear_data']['timestamps']
-                combined_stretchmagtec = seq_data['press_data']['stretchmagtec'] + seq_data['shear_data']['stretchmagtec']
+                # Handle sequences with only shear_data (press happens before movement, not stored separately)
+                if 'press_data' in seq_data and 'shear_data' in seq_data:
+                    # Combine press and shear data into one sequence
+                    combined_forces = seq_data['press_data']['forces'] + seq_data['shear_data']['forces']
+                    combined_positions = seq_data['press_data']['positions'] + seq_data['shear_data']['positions']
+                    combined_timestamps = seq_data['press_data']['timestamps'] + seq_data['shear_data']['timestamps']
+                    combined_stretchmagtec = seq_data['press_data']['stretchmagtec'] + seq_data['shear_data']['stretchmagtec']
+                elif 'shear_data' in seq_data:
+                    # Only shear data available (press not stored separately)
+                    combined_forces = seq_data['shear_data']['forces']
+                    combined_positions = seq_data['shear_data']['positions']
+                    combined_timestamps = seq_data['shear_data']['timestamps']
+                    combined_stretchmagtec = seq_data['shear_data']['stretchmagtec']
+                else:
+                    print(f"⚠️  Warning: Sequence {seq_idx} for point {point_name} has no data, skipping...")
+                    continue
                 
                 # Add to concatenated arrays
                 end_idx = start_idx + len(combined_forces)
@@ -1154,7 +1226,7 @@ def save_shear_data_to_h5(output_file, sequences_by_point, stretch_value, stretc
                 all_stretchmagtec.extend(combined_stretchmagtec)
                 
                 # Create label (MUST match format from franka_skin_test.py)
-                label = f"pos_{point_name}_{point_name}_press_{seq_idx:02d}_shear_{seq_data['direction']}_{seq_data['target_force']:.1f}N"
+                label = f"pos_{point_name}_{point_name}_press_{seq_idx:02d}_shear_{seq_data['direction']}_{FZ_TARGET:.1f}N"
                 all_labels.extend([label.encode('utf-8')] * len(combined_forces))
                 
                 # Create press group inside presses (MANDATORY - same as franka_skin_test.py)
@@ -1180,7 +1252,7 @@ def save_shear_data_to_h5(output_file, sequences_by_point, stretch_value, stretc
                 # Additional metadata (for shear force data)
                 press_group.attrs['sequence_idx'] = int(seq_idx)
                 press_group.attrs['direction'] = str(seq_data['direction'])
-                press_group.attrs['target_force'] = float(seq_data['target_force'])
+                press_group.attrs['displacement'] = float(seq_data.get('displacement', 0.0))
                 
                 # Calculate indentation (Z-axis movement) for compatibility
                 if combined_positions:
@@ -1252,10 +1324,20 @@ def run_data_collection(collection_done_event: threading.Event):
         
         print("Starting sensor threads...")
         # Use baud rate and port from config (same as franka_skin_test.py)
+        print(f"  Connecting to StretchMagTec sensor:")
+        print(f"    Port: {config.STRETCHMAGTEC_PORT}")
+        print(f"    Baud rate: {config.STRETCHMAGTEC_BAUD}")
+        # Check if port exists
+        import os
+        if os.path.exists(config.STRETCHMAGTEC_PORT):
+            print(f"  ✅ Port {config.STRETCHMAGTEC_PORT} exists")
+        else:
+            print(f"  ⚠️  Port {config.STRETCHMAGTEC_PORT} does NOT exist!")
         stretchmagtec_reader = StretchMagTecSerialReader(port=config.STRETCHMAGTEC_PORT, baud=config.STRETCHMAGTEC_BAUD)
-        print(f"  StretchMagTec sensor: port={config.STRETCHMAGTEC_PORT}, baud={config.STRETCHMAGTEC_BAUD}")
+        print(f"  ✅ StretchMagTec sensor reader created")
         stretchmagtec_reader.daemon = True
         stretchmagtec_reader.start()
+        print(f"  ✅ StretchMagTec sensor thread started")
         
         ft_thread = FTSensorThread()
         ft_thread.daemon = True
@@ -1344,7 +1426,18 @@ def run_data_collection(collection_done_event: threading.Event):
         sensor_working = False
         
         for check_attempt in range(max_check_attempts):
-            sensor_data = read_stretchmagtec_data()
+            # Use the module's function directly to ensure we access the correct global
+            sensor_data = skin_test_module.read_stretchmagtec_data()
+            
+            # Print sensor readings for debugging
+            if sensor_data is not None:
+                print(f"  Sensor data shape: {sensor_data.shape}")
+                print(f"  Sensor data sample (first sensor, all channels): {sensor_data[0, :] if sensor_data.size > 0 else 'empty'}")
+                print(f"  Sensor data min/max: {np.min(sensor_data):.2f} / {np.max(sensor_data):.2f}")
+                print(f"  Non-zero values count: {np.count_nonzero(np.abs(sensor_data) > 1.0)}")
+            else:
+                print(f"  ⚠️  Sensor data is None")
+            
             # Check if any sensor has non-zero readings
             if sensor_data is not None and np.any(np.abs(sensor_data) > 1.0):  # At least 1 unit of magnetic field
                 sensor_working = True
@@ -1372,8 +1465,17 @@ def run_data_collection(collection_done_event: threading.Event):
             stretchmagtec_reader.running = False
             stretchmagtec_reader.join(timeout=2.0)
             stretchmagtec_ready_event.clear()
+            print(f"  Reconnecting to StretchMagTec sensor:")
+            print(f"    Port: {config.STRETCHMAGTEC_PORT}")
+            print(f"    Baud rate: {config.STRETCHMAGTEC_BAUD}")
+            # Check if port exists
+            import os
+            if os.path.exists(config.STRETCHMAGTEC_PORT):
+                print(f"  ✅ Port {config.STRETCHMAGTEC_PORT} exists")
+            else:
+                print(f"  ⚠️  Port {config.STRETCHMAGTEC_PORT} does NOT exist!")
             stretchmagtec_reader = StretchMagTecSerialReader(port=config.STRETCHMAGTEC_PORT, baud=config.STRETCHMAGTEC_BAUD)
-            print(f"  StretchMagTec sensor: port={config.STRETCHMAGTEC_PORT}, baud={config.STRETCHMAGTEC_BAUD}")
+            print(f"  ✅ StretchMagTec sensor reader recreated")
             stretchmagtec_reader.daemon = True
             stretchmagtec_reader.start()
             __main__.stretchmagtec_reader = stretchmagtec_reader
@@ -1384,7 +1486,7 @@ def run_data_collection(collection_done_event: threading.Event):
                 raise RuntimeError("StretchMagTec sensor did not start streaming after reconnection.")
             
             time.sleep(STRETCHMAGTEC_STREAM_STABILIZATION)
-            sensor_data = read_stretchmagtec_data()
+            sensor_data = skin_test_module.read_stretchmagtec_data()
             if sensor_data is None or not np.any(np.abs(sensor_data) > 1.0):
                 raise RuntimeError("Magnetic sensor still not working after reconnection. Please check hardware.")
             
@@ -1469,10 +1571,10 @@ def run_data_collection(collection_done_event: threading.Event):
             )
             sequences_by_point[point_name] = sequences
             
-            # Ask user before next point
+            # Automatic progression - no user prompt needed
             if point_idx < len(TARGET_OFFSETS) - 1:
-                print(f"\nPress Enter to continue to next point...")
-                input()
+                print(f"\nContinuing to next point automatically...")
+                time.sleep(1.0)  # Brief pause before next point
         
         # Save data
         output_file = run_root / f"{run_name}_shear_{stretch_label}.h5"
@@ -1560,8 +1662,8 @@ def main():
             print("=" * 70)
             print(f"Output directory: {run_root}")
             print(f"Shear sequences per point: {len(SHEAR_SEQUENCES)}")
-            print(f"Fz target: {FZ_TARGET}N, Fx/Fy target: ±{FX_TARGET}N")
-            print(f"Data collection duration: {DATA_COLLECTION_DURATION}s per sequence")
+            print(f"Fz target: {FZ_TARGET}N, Lateral displacement: ±{SHEAR_DISPLACEMENT*1000:.1f}mm (position control)")
+            print(f"Data collection: during entire movement + {WAIT_AFTER_DISPLACEMENT}s wait at target")
 
             if PROMPT_FOR_STRETCH:
                 input(f"\nSet the skin to approximately {int(round(stretch_value * 100))}% stretch and press Enter to continue...")

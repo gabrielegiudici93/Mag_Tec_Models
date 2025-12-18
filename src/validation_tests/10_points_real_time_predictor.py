@@ -104,20 +104,18 @@ class SensorReader:
         self.sensor_hz_counts = [0] * STRETCHMAGTEC_SENSORS
         self.sensor_hz_values = [0.0] * STRETCHMAGTEC_SENSORS
         
-        # FT sensor calibration (use config values to match data collection)
+        # FT sensor calibration
         self.ft_offset = np.zeros(6)  # [fx, fy, fz, tx, ty, tz]
         self.ft_calibration_samples = []
         self.ft_calibration_start_time = None
-        self.ft_calibration_duration = FT_CALIBRATION_DURATION  # Use config value (2.0 seconds)
-        self.ft_calibration_sampling_rate = 100.0  # Hz - match data collection
+        self.ft_calibration_duration = 2.0  # seconds (from config)
         self.ft_is_calibrated = False
         
-        # StretchMagTec sensor calibration (use config values to match data collection)
+        # StretchMagTec sensor calibration
         self.stretchmagtec_offsets = np.zeros((STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS))
         self.stretchmagtec_calibration_samples = []
         self.stretchmagtec_calibration_start_time = None
-        self.stretchmagtec_calibration_duration = STRETCHMAGTEC_CALIBRATION_DURATION  # Use config value (5.0 seconds)
-        self.stretchmagtec_calibration_sampling_rate = 100.0  # Hz - match data collection
+        self.stretchmagtec_calibration_duration = 5.0  # seconds (from config)
         self.stretchmagtec_is_calibrated = False
         
         # FT sensor setup
@@ -138,31 +136,6 @@ class SensorReader:
         self.ft_lock = threading.Lock()
         self.stretchmagtec_lock = threading.Lock()
     
-    def clear_buffers(self):
-        """Clear all data buffers to remove stale data."""
-        with self.ft_lock:
-            self.ft_buffer.clear()
-            self.time_buffer.clear()
-        with self.stretchmagtec_lock:
-            self.stretchmagtec_buffer.clear()
-        print("[SensorReader] All buffers cleared")
-    
-    def flush_serial_buffers(self):
-        """Flush serial port input buffers to remove old data."""
-        if self.ft_ser and self.ft_ser.is_open:
-            try:
-                self.ft_ser.reset_input_buffer()
-                print("[SensorReader] FT sensor serial buffer flushed")
-            except Exception as e:
-                print(f"[SensorReader] Error flushing FT buffer: {e}")
-        
-        if self.stretchmagtec_ser and self.stretchmagtec_ser.is_open:
-            try:
-                self.stretchmagtec_ser.reset_input_buffer()
-                print("[SensorReader] StretchMagTec serial buffer flushed")
-            except Exception as e:
-                print(f"[SensorReader] Error flushing StretchMagTec buffer: {e}")
-    
     def start_sensors(self):
         """Start sensor reading threads."""
         if self.running:
@@ -178,9 +151,6 @@ class SensorReader:
         self.stretchmagtec_calibration_samples = []
         self.stretchmagtec_calibration_start_time = None
         self.stretchmagtec_offsets = np.zeros((STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS))
-        
-        # Clear all buffers before starting
-        self.clear_buffers()
         
         self.running = True
         
@@ -264,13 +234,6 @@ class SensorReader:
             
             zeroRef = self._force_from_serial_message(dataArray)
             print(f"[FT Thread] Zero reference set: {zeroRef}")
-            
-            # Track connection time for stabilization period
-            connection_time = time.time()
-            FT_STREAM_STABILIZATION = 3.0  # seconds - match data collection
-            print(f"[FT Thread] Connected. Starting data stream (RAW values will be shown immediately)...")
-            print(f"[FT Thread] Stabilization period: {FT_STREAM_STABILIZATION:.1f} seconds")
-            print(f"[FT Thread] Calibration will start automatically after stabilization period")
             print(f"[FT Thread] Starting real-time reading loop...")
             
             read_count = 0
@@ -288,79 +251,40 @@ class SensorReader:
                 if read_count <= 5:
                     print(f"[FT Thread] Reading #{read_count}: Fx={raw_force[0]:.4f}N, Fy={raw_force[1]:.4f}N, Fz={raw_force[2]:.4f}N")
                 
-                current_time = time.time()
-                
-                # Check if stabilization period has passed (3 seconds after connection)
-                time_since_connection = current_time - connection_time
-                
                 # Handle FT calibration
-                # Wait for stabilization period, then start calibration
-                # During calibration, collect raw samples at controlled rate (100 Hz)
-                # After calibration, apply offset compensation
+                current_time = time.time()
                 if not self.ft_is_calibrated:
-                    # Check if stabilization period has passed
-                    if time_since_connection >= FT_STREAM_STABILIZATION:
-                        # Stabilization period complete - start calibration
-                        if self.ft_calibration_start_time is None:
-                            self.ft_calibration_start_time = current_time
-                            self.ft_last_sample_time = current_time
-                            print(f"[FT Thread] Stabilization complete. Starting calibration ({self.ft_calibration_duration} seconds at {self.ft_calibration_sampling_rate} Hz)...")
-                            print(f"[FT Thread] Please ensure FT sensor is in stable position (no contact)...")
-                        
-                        # Calibration is active - collect samples
-                        elapsed = current_time - self.ft_calibration_start_time
+                    if self.ft_calibration_start_time is None:
+                        self.ft_calibration_start_time = current_time
+                        print(f"[FT Thread] Starting calibration ({self.ft_calibration_duration} seconds)...")
                     
-                        # Collect calibration samples at controlled rate (100 Hz = 0.01s interval)
-                        # Match data collection: actively sample at 100 Hz
-                        sample_interval = 1.0 / self.ft_calibration_sampling_rate
-                        if current_time - self.ft_last_sample_time >= sample_interval:
-                            # Store RAW values (before any offset compensation)
-                            self.ft_calibration_samples.append(raw_force.copy())
-                            self.ft_last_sample_time = current_time
-                        
-                        # Check if calibration duration is complete
-                        if elapsed >= self.ft_calibration_duration:
-                            if self.ft_calibration_samples:
-                                samples_array = np.array(self.ft_calibration_samples)
-                                self.ft_offset = np.mean(samples_array, axis=0)
-                                std_offset = np.std(samples_array, axis=0)
-                                self.ft_is_calibrated = True
-                                print(f"[FT Thread] ✅ Calibration complete!")
-                                print(f"  Duration: {elapsed:.2f} seconds")
-                                print(f"  Samples collected: {len(self.ft_calibration_samples)} (expected: ~{int(self.ft_calibration_duration * self.ft_calibration_sampling_rate)})")
-                                print(f"  Mean offset: {[round(x, 3) for x in self.ft_offset]}")
-                                print(f"  Std deviation: {[round(x, 3) for x in std_offset]}")
-                                self.ft_calibration_samples = []  # Clear to save memory
-                                
-                                # Clear buffers after calibration to start fresh
-                                with self.ft_lock:
-                                    self.ft_buffer.clear()
-                                    self.time_buffer.clear()
-                                print(f"[FT Thread] Buffers cleared after calibration")
-                            else:
-                                print(f"[FT Thread] ⚠️ Warning: No samples collected during calibration")
+                    # Collect calibration samples
+                    self.ft_calibration_samples.append(raw_force.copy())
+                    
+                    # Check if calibration is complete
+                    if current_time - self.ft_calibration_start_time >= self.ft_calibration_duration:
+                        if self.ft_calibration_samples:
+                            samples_array = np.array(self.ft_calibration_samples)
+                            self.ft_offset = np.mean(samples_array, axis=0)
+                            self.ft_is_calibrated = True
+                            print(f"[FT Thread] ✅ Calibration complete! Offset: {self.ft_offset}")
+                            self.ft_calibration_samples = []  # Clear to save memory
                 
-                # Display logic: Always show data (RAW before calibration, COMPENSATED after)
-                if not self.ft_is_calibrated:
-                    # Before calibration complete - show RAW values (no offset compensation)
-                    display_force = raw_force.copy()
-                else:
-                    # Calibration complete - show COMPENSATED values (with offset compensation)
-                    compensated_force = raw_force - self.ft_offset
-                    # Apply noise threshold to compensated values
-                    display_force = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in compensated_force]
+                # Apply offset compensation
+                compensated_force = raw_force - self.ft_offset
                 
-                # Always update display data (raw during stabilization/calibration, compensated after)
                 with self.ft_lock:
-                    self.ft_data[:] = display_force
+                    self.ft_data[:] = compensated_force
                 
-                # Add to buffer (use display_force which is raw during stabilization/calibration, compensated after)
+                # Use compensated force for buffer (already compensated above)
+                ft_cleaned = [0 if abs(val) < FT_NOISE_THRESHOLD else val for val in compensated_force]
+                
                 current_time = time.time()
                 if len(self.time_buffer) >= self.max_buffer_size:
                     self.ft_buffer.pop(0)
                     self.time_buffer.pop(0)
                 
-                self.ft_buffer.append(display_force.copy())
+                self.ft_buffer.append(ft_cleaned.copy())
                 self.time_buffer.append(current_time)
                 
         except Exception as e:
@@ -400,32 +324,16 @@ class SensorReader:
                 print(f"[StretchMagTec Thread] ❌ Could not connect to any port")
                 return
             
-            # Flush any existing data from serial buffer
+            time.sleep(2)  # Wait for Arduino to initialize
+            
+            # Flush any existing data
             self.stretchmagtec_ser.reset_input_buffer()
-            
-            # Track connection time for stabilization period
-            connection_time = time.time()
-            STRETCHMAGTEC_STREAM_STABILIZATION = 15.0  # seconds - match data collection
-            print(f"[StretchMagTec Thread] Connected. Starting data stream (RAW values will be shown immediately)...")
-            print(f"[StretchMagTec Thread] Stabilization period: {STRETCHMAGTEC_STREAM_STABILIZATION:.1f} seconds")
-            print(f"[StretchMagTec Thread] Calibration will start automatically after stabilization period")
-            
-            # Also periodically flush during operation to avoid stale data buildup
-            last_flush_time = time.time()
-            flush_interval = 5.0  # Flush every 5 seconds
             
             line_count = 0
             parse_fail_count = 0
             no_data_count = 0
             
             while self.running:
-                # Periodically flush serial buffer to avoid stale data
-                current_time = time.time()
-                if current_time - last_flush_time >= flush_interval:
-                    if self.stretchmagtec_ser.in_waiting > 100:  # Only flush if buffer has significant data
-                        self.stretchmagtec_ser.reset_input_buffer()
-                        last_flush_time = current_time
-                
                 if self.stretchmagtec_ser.in_waiting > 0:
                     line = self.stretchmagtec_ser.readline().decode('utf-8', errors='ignore').strip()
                     line_count += 1
@@ -434,71 +342,32 @@ class SensorReader:
                         sensor_values = self._parse_stretchmagtec_line(line)
                         
                         if sensor_values is not None:
-                            current_time = time.time()
-                            
-                            # Check if stabilization period has passed (15 seconds after connection)
-                            time_since_connection = current_time - connection_time
-                            
                             # Handle StretchMagTec calibration
-                            # Wait for stabilization period, then start calibration
-                            # During calibration, collect raw samples at controlled rate (100 Hz)
-                            # After calibration, apply offset compensation
+                            current_time = time.time()
                             if not self.stretchmagtec_is_calibrated:
-                                # Check if stabilization period has passed
-                                if time_since_connection >= STRETCHMAGTEC_STREAM_STABILIZATION:
-                                    # Stabilization period complete - start calibration
-                                    if self.stretchmagtec_calibration_start_time is None:
-                                        self.stretchmagtec_calibration_start_time = current_time
-                                        self.stretchmagtec_last_sample_time = current_time
-                                        print(f"[StretchMagTec Thread] Stabilization complete. Starting calibration ({self.stretchmagtec_calibration_duration} seconds at {self.stretchmagtec_calibration_sampling_rate} Hz)...")
-                                        print(f"[StretchMagTec Thread] Please ensure sensors are in stable position (no contact)...")
-                                    
-                                    # Calibration is active - collect samples
-                                    elapsed = current_time - self.stretchmagtec_calibration_start_time
-                                    
-                                    # Collect samples at controlled rate (100 Hz = 0.01s interval)
-                                    # Match data collection: actively sample at 100 Hz
-                                    sample_interval = 1.0 / self.stretchmagtec_calibration_sampling_rate
-                                    if current_time - self.stretchmagtec_last_sample_time >= sample_interval:
-                                        if sensor_values.shape == (STRETCHMAGTEC_SENSORS, STRETCHMAGTEC_CHANNELS):
-                                            # Store RAW values (before any offset compensation)
-                                            self.stretchmagtec_calibration_samples.append(sensor_values.copy())
-                                        self.stretchmagtec_last_sample_time = current_time
-                                    
-                                    # Check if calibration duration is complete
-                                    if elapsed >= self.stretchmagtec_calibration_duration:
-                                        if self.stretchmagtec_calibration_samples:
-                                            samples_array = np.array(self.stretchmagtec_calibration_samples)
-                                            # Calculate mean offset for each sensor and channel (match data collection)
-                                            mean_offsets = np.mean(samples_array, axis=0)  # Shape: [num_sensors, num_channels]
-                                            std_offsets = np.std(samples_array, axis=0)
-                                            self.stretchmagtec_offsets = mean_offsets
-                                            self.stretchmagtec_is_calibrated = True
-                                            print(f"[StretchMagTec Thread] ✅ Calibration complete!")
-                                            print(f"  Duration: {elapsed:.2f} seconds")
-                                            print(f"  Samples collected: {len(self.stretchmagtec_calibration_samples)} (expected: ~{int(self.stretchmagtec_calibration_duration * self.stretchmagtec_calibration_sampling_rate)})")
-                                            for sensor_id in range(STRETCHMAGTEC_SENSORS):
-                                                print(f"  Sensor {sensor_id+1}: offset = {[round(x, 4) for x in self.stretchmagtec_offsets[sensor_id]]}, std = {[round(x, 4) for x in std_offsets[sensor_id]]}")
-                                            self.stretchmagtec_calibration_samples = []  # Clear to save memory
-                                            
-                                            # Clear buffers after calibration to start fresh
-                                            with self.stretchmagtec_lock:
-                                                self.stretchmagtec_buffer.clear()
-                                            print(f"[StretchMagTec Thread] Buffers cleared after calibration")
-                                        else:
-                                            print(f"[StretchMagTec Thread] ⚠️ Warning: No samples collected during calibration")
+                                if self.stretchmagtec_calibration_start_time is None:
+                                    self.stretchmagtec_calibration_start_time = current_time
+                                    print(f"[StretchMagTec Thread] Starting calibration ({self.stretchmagtec_calibration_duration} seconds)...")
+                                
+                                # Collect calibration samples
+                                self.stretchmagtec_calibration_samples.append(sensor_values.copy())
+                                
+                                # Check if calibration is complete
+                                if current_time - self.stretchmagtec_calibration_start_time >= self.stretchmagtec_calibration_duration:
+                                    if self.stretchmagtec_calibration_samples:
+                                        samples_array = np.array(self.stretchmagtec_calibration_samples)
+                                        self.stretchmagtec_offsets = np.mean(samples_array, axis=0)
+                                        self.stretchmagtec_is_calibrated = True
+                                        print(f"[StretchMagTec Thread] ✅ Calibration complete!")
+                                        for sensor_id in range(STRETCHMAGTEC_SENSORS):
+                                            print(f"  S{sensor_id+1}: offset = [{self.stretchmagtec_offsets[sensor_id, 0]:.2f}, {self.stretchmagtec_offsets[sensor_id, 1]:.2f}, {self.stretchmagtec_offsets[sensor_id, 2]:.2f}]")
+                                        self.stretchmagtec_calibration_samples = []  # Clear to save memory
                             
-                            # Display logic: Always show data (RAW before calibration, COMPENSATED after)
-                            if not self.stretchmagtec_is_calibrated:
-                                # Before calibration complete - show RAW values (no offset compensation)
-                                display_values = sensor_values
-                            else:
-                                # Calibration complete - show COMPENSATED values (with offset compensation)
-                                display_values = sensor_values - self.stretchmagtec_offsets
+                            # Apply offset compensation
+                            compensated_values = sensor_values - self.stretchmagtec_offsets
                             
-                            # Always update display data (raw during stabilization/calibration, compensated after)
                             with self.stretchmagtec_lock:
-                                self.stretchmagtec_data[:] = display_values
+                                self.stretchmagtec_data[:] = compensated_values
                             
                             # Update Hz tracking
                             current_time = time.time()
@@ -510,15 +379,15 @@ class SensorReader:
                             
                             # Count Hz for each sensor (if any channel changed)
                             for sensor_id in range(STRETCHMAGTEC_SENSORS):
-                                if np.any(np.abs(display_values[sensor_id, :]) > 0):
+                                if np.any(np.abs(compensated_values[sensor_id, :]) > 0):
                                     self.sensor_hz_counts[sensor_id] += 1
                             
-                            # Add to buffer (use display_values which is raw during calibration, compensated after)
+                            # Add to buffer (use compensated values)
                             current_time = time.time()
                             if len(self.stretchmagtec_buffer) >= self.max_buffer_size:
                                 self.stretchmagtec_buffer.pop(0)
                             
-                            self.stretchmagtec_buffer.append(display_values.copy())
+                            self.stretchmagtec_buffer.append(compensated_values.copy())
                             
                             # Debug: print first few successful reads
                             if line_count <= 5:
@@ -564,49 +433,34 @@ class SensorReader:
                     return sensor_data
             
             # Try format: "S1: X=1234 Y=5678 Z=9012 | S2: X=2345 Y=6789 Z=0123 | ..."
-            # Also handle corrupted lines that might be missing sensor identifier: "=-88 Y=-24185 Z=11274 |..."
             if ' | ' in line:
                 sensor_parts = line.split(' | ')
                 if len(sensor_parts) >= STRETCHMAGTEC_SENSORS:
                     for i, sensor_part in enumerate(sensor_parts[:STRETCHMAGTEC_SENSORS]):
                         sensor_part = sensor_part.strip()
+                        if ':' not in sensor_part:
+                            continue
                         
-                        # Extract the values part - handle both "S1: X=..." and "X=..." formats
-                        if ':' in sensor_part:
-                            values_part = sensor_part.split(':', 1)[1].strip()
-                        else:
-                            # No colon found, assume the whole part is the values (corrupted line)
-                            values_part = sensor_part
+                        # Extract the values part after ':'
+                        values_part = sensor_part.split(':', 1)[1].strip()
                         
                         # Parse X=, Y=, Z= values
-                        # Handle cases where line might start with "=" instead of "X="
                         coords = {'X': 0, 'Y': 0, 'Z': 0}
-                        parts = values_part.split()
-                        for j, coord_pair in enumerate(parts):
+                        for coord_pair in values_part.split():
                             if '=' in coord_pair:
-                                # Handle "=-88" format (missing X prefix)
-                                if coord_pair.startswith('=') and j == 0:
-                                    # First part starting with "=" is likely X value
+                                coord, value = coord_pair.split('=', 1)
+                                if coord in coords:
                                     try:
-                                        coords['X'] = float(coord_pair[1:])
+                                        coords[coord] = float(value)
                                     except ValueError:
-                                        pass
-                                else:
-                                    coord, value = coord_pair.split('=', 1)
-                                    if coord in coords:
-                                        try:
-                                            coords[coord] = float(value)
-                                        except ValueError:
-                                            coords[coord] = 0
+                                        coords[coord] = 0
                         
                         # Store in array [sensor_id, channel] where channels are [X, Y, Z]
                         sensor_values[i, 0] = coords['X']
                         sensor_values[i, 1] = coords['Y']
                         sensor_values[i, 2] = coords['Z']
                     
-                    # Only return if we got valid data (non-zero values)
-                    if np.any(sensor_values != 0):
-                        return sensor_values
+                    return sensor_values
             
             # Try format with regex: "S1: X=1234 Y=5678 Z=9012" (without | separator)
             import re
@@ -622,26 +476,6 @@ class SensorReader:
                             sensor_values[sensor_id, 1] = float(match[2])  # Y
                             sensor_values[sensor_id, 2] = float(match[3])  # Z
                         except ValueError:
-                            continue
-                
-                if np.any(sensor_values != 0):
-                    return sensor_values
-            
-            # Try to parse corrupted lines that might have "X= Y= Z=" pattern without sensor identifier
-            # Pattern: "=-88 Y=-24185 Z=11274" or "X=-88 Y=-24185 Z=11274"
-            corrupted_pattern = r'(?:X=|=)([-\d.]+)\s+Y=([-\d.]+)\s+Z=([-\d.]+)'
-            corrupted_matches = re.findall(corrupted_pattern, line)
-            if corrupted_matches and ' | ' in line:
-                # If we found matches and there's a separator, try to parse all sensor parts
-                sensor_parts = line.split(' | ')
-                for i, sensor_part in enumerate(sensor_parts[:STRETCHMAGTEC_SENSORS]):
-                    match = re.search(corrupted_pattern, sensor_part)
-                    if match:
-                        try:
-                            sensor_values[i, 0] = float(match.group(1))  # X
-                            sensor_values[i, 1] = float(match.group(2))  # Y
-                            sensor_values[i, 2] = float(match.group(3))  # Z
-                        except (ValueError, IndexError):
                             continue
                 
                 if np.any(sensor_values != 0):
@@ -888,20 +722,14 @@ class ModelPredictor:
             location_name = MULTIPOINT_OFFSET_NAMES[prediction]
             confidence = probabilities[prediction] if prediction < len(probabilities) else 0.0
             
-            # Get ALL probabilities for all locations (11 classes: 10 locations + no_touch)
-            all_predictions = {
-                MULTIPOINT_OFFSET_NAMES[idx]: float(probabilities[idx]) 
-                for idx in range(len(MULTIPOINT_OFFSET_NAMES)) if idx < len(probabilities)
-            }
-            
-            # Get top 3 predictions for display purposes
+            # Get top 3 predictions
             top3_indices = np.argsort(probabilities)[-3:][::-1]
             top3_predictions = {
                 MULTIPOINT_OFFSET_NAMES[idx]: float(probabilities[idx]) 
                 for idx in top3_indices if idx < len(MULTIPOINT_OFFSET_NAMES)
             }
             
-            return location_name, confidence, all_predictions
+            return location_name, confidence, top3_predictions
             
         except Exception as e:
             print(f"Location prediction error: {e}")
@@ -984,15 +812,11 @@ class GridVisualizationWindow:
         self.window.title("10-Point Contact Grid Visualization")
         self.window.geometry("1000x400")
         
-        # All locations including no_touch (11 classes total)
-        self.locations = MULTIPOINT_OFFSET_NAMES  # ['1', '2', ..., '10', 'no_touch']
+        # 10 locations
+        self.locations = MULTIPOINT_OFFSET_NAMES  # ['1', '2', ..., '10']
         
         # Contact probabilities (will be updated in real-time)
-        # Initialize ALL locations including no_touch to ensure it's always present
         self.location_probabilities = {loc: 0.0 for loc in self.locations}
-        # Explicitly ensure no_touch is initialized
-        if 'no_touch' not in self.location_probabilities:
-            self.location_probabilities['no_touch'] = 0.0
         
         # Create matplotlib figure
         self.create_visualization()
@@ -1017,7 +841,7 @@ class GridVisualizationWindow:
         info_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.info_label = ttk.Label(info_frame, 
-                                     text="10-Point Contact Grid | Locations: 1-10 + No Touch",
+                                     text="10-Point Contact Grid | Locations: 1-10",
                                      font=("Arial", 10, "bold"))
         self.info_label.pack()
         
@@ -1033,10 +857,6 @@ class GridVisualizationWindow:
     def draw_grid(self):
         """Draw the 10-point contact grid with current probabilities."""
         self.ax.clear()
-        
-        # Ensure no_touch probability exists (defensive check)
-        if 'no_touch' not in self.location_probabilities:
-            self.location_probabilities['no_touch'] = 0.0
         
         # Grid layout: 2 rows × 5 columns
         cell_size = 1.0
@@ -1067,161 +887,53 @@ class GridVisualizationWindow:
                             fontsize=14, fontweight='bold',
                             color='white' if prob > 0.5 else 'black')
                 
-                # Add probability label (ALWAYS show percentage for all taxels)
-                self.ax.text(x + cell_size/2, y + cell_size/2 - 0.3,
-                            f"{prob*100:.1f}%", ha='center', va='center',
-                            fontsize=10, color='white' if prob > 0.5 else 'black')
+                # Add probability label
+                if prob > 0.01:
+                    self.ax.text(x + cell_size/2, y + cell_size/2 - 0.3,
+                                f"{prob*100:.1f}%", ha='center', va='center',
+                                fontsize=10, color='white' if prob > 0.5 else 'black')
         
-        # Draw no_touch indicator directly below the grid
-        # Bottom row of grid is at y=0.0, so position no_touch below it with spacing
-        # Calculate bottom of grid: bottom row y position = 0.0 (lowest row)
-        grid_bottom = 0.0
-        no_touch_height = cell_size * 0.6
-        no_touch_spacing = cell_spacing  # Use same spacing as between grid cells
-        no_touch_y = grid_bottom - no_touch_spacing - no_touch_height  # Position directly below grid
-        
-        # Center the no_touch indicator horizontally (grid spans 5 columns)
-        no_touch_width = cell_size * 1.5
-        grid_width = 5 * (cell_size + cell_spacing) - cell_spacing  # Total grid width
-        no_touch_x = (grid_width - no_touch_width) / 2  # Center it
-        
-        # Get no_touch probability (always show, default to 0.0 if missing)
-        no_touch_prob = self.location_probabilities.get('no_touch', 0.0)
-        
-        # Color based on probability (green = no touch, gray = low probability)
-        # Use green colormap for high no_touch prob, gray for low (always visible)
-        # Ensure color is always visible regardless of probability value
-        if no_touch_prob > 0.5:
-            # High no_touch probability -> bright green (ensure it's dark enough for white text)
-            # Clamp to 0.6-0.95 range to ensure good contrast with white text
-            green_value = 0.6 + min(no_touch_prob, 0.95) * 0.35  # Scale to 0.6-0.95 range
-            no_touch_color = plt.cm.Greens(green_value)
-        elif no_touch_prob > 0.1:
-            # Medium no_touch probability -> medium green
-            green_value = 0.4 + (no_touch_prob - 0.1) * 0.5  # Scale to 0.4-0.6 range
-            no_touch_color = plt.cm.Greens(green_value)
-        else:
-            # Low no_touch probability -> light gray (but still visible with black text)
-            no_touch_color = plt.cm.Greys(0.5)  # Medium gray, always visible
-        
-        # ALWAYS draw no_touch indicator rectangle (even if probability is 0)
-        # Use thicker edge and high zorder to ensure it's always visible and on top
-        no_touch_rect = Rectangle((no_touch_x, no_touch_y), no_touch_width, no_touch_height,
-                                  fill=True, facecolor=no_touch_color, edgecolor='black', linewidth=3,
-                                  zorder=5)  # High zorder to ensure it's drawn on top
-        self.ax.add_patch(no_touch_rect)
-        
-        # Determine text color based on background brightness
-        # For green backgrounds (high prob), use white text
-        # For gray backgrounds (low prob), use black text
-        text_color = 'white' if no_touch_prob > 0.5 else 'black'
-        percent_color = 'white' if no_touch_prob > 0.5 else 'black'
-        
-        # Add no_touch label (ALWAYS visible, always drawn)
-        self.ax.text(no_touch_x + no_touch_width/2, no_touch_y + no_touch_height/2,
-                    'NO TOUCH', ha='center', va='center',
-                    fontsize=12, fontweight='bold',
-                    color=text_color, zorder=10)  # High zorder to ensure it's on top
-        
-        # Add no_touch probability label (ALWAYS show percentage, always drawn)
-        self.ax.text(no_touch_x + no_touch_width/2, no_touch_y - 0.15,
-                    f"{no_touch_prob*100:.1f}%", ha='center', va='center',
-                    fontsize=10, fontweight='bold',
-                    color=percent_color, zorder=10)  # High zorder to ensure it's on top
-        
-        # Set axis properties (ensure no_touch indicator is always visible)
+        # Set axis properties
         x_max = 5 * (cell_size + cell_spacing)
         y_max = 2 * (cell_size + cell_spacing)
         
-        # Calculate no_touch bottom position for axis limits
-        no_touch_bottom = no_touch_y  # Bottom of no_touch rectangle (negative value)
-        
-        # Set limits FIRST to ensure no_touch indicator is visible with proper margins
-        # Use larger margins to ensure it's always visible
-        margin_x = 0.2
-        margin_y = 0.2
-        self.ax.set_xlim(-margin_x, x_max + margin_x)
-        self.ax.set_ylim(no_touch_bottom - margin_y, y_max + margin_y)  # Include no_touch with margin
-        
-        # Set aspect AFTER limits, but use 'datalim' to prevent overriding our limits
-        # 'datalim' means matplotlib adjusts the figure/axes size, not the data limits
-        self.ax.set_aspect('equal', adjustable='datalim')
+        self.ax.set_xlim(-0.1, x_max)
+        self.ax.set_ylim(-0.1, y_max)
+        self.ax.set_aspect('equal', adjustable='box')
         self.ax.axis('off')
         
-        # CRITICAL: Force the limits again after aspect is set
-        # set_aspect can sometimes adjust limits, so we enforce them again
-        self.ax.set_xlim(-margin_x, x_max + margin_x)
-        self.ax.set_ylim(no_touch_bottom - margin_y, y_max + margin_y)
-        
-        # Disable autoscaling to prevent matplotlib from changing our limits
-        self.ax.set_autoscale_on(False)
-        
-        # Add colorbar (position it to not overlap with no_touch indicator)
-        # Only create colorbar once, don't recreate it on each redraw
-        if not hasattr(self, 'colorbar') or self.colorbar is None:
+        # Add colorbar
+        if not hasattr(self, 'colorbar'):
             sm = plt.cm.ScalarMappable(cmap=plt.cm.Reds, norm=plt.Normalize(vmin=0, vmax=1))
             sm.set_array([])
-            # Position colorbar at the top to avoid overlap with no_touch at bottom
             self.colorbar = self.fig.colorbar(sm, ax=self.ax, orientation='horizontal', 
-                                              pad=0.02, fraction=0.03, label='Contact Probability',
-                                              location='top')
+                                              pad=0.05, fraction=0.046, label='Contact Probability')
         
-        # CRITICAL: Final check to ensure no_touch is ALWAYS visible regardless of probability
-        # Force limits one more time after colorbar to prevent any cutoff
-        current_ylim = self.ax.get_ylim()
-        required_bottom = no_touch_bottom - margin_y
-        
-        # Always ensure no_touch bottom is included in y-limits
-        if current_ylim[0] > required_bottom:
-            # Current bottom is too high, extend it down
-            self.ax.set_ylim(required_bottom, current_ylim[1])
-        
-        # Verify no_touch rectangle bounds are within axis limits
-        no_touch_top = no_touch_y + no_touch_height
-        final_ylim = self.ax.get_ylim()
-        
-        # If no_touch extends outside limits, adjust (defensive check)
-        if no_touch_bottom < final_ylim[0]:
-            self.ax.set_ylim(no_touch_bottom - margin_y, final_ylim[1])
-        if no_touch_top > final_ylim[1]:
-            self.ax.set_ylim(final_ylim[0], no_touch_top + margin_y)
-        
-        # Disable autoscaling one more time (matplotlib might re-enable it)
-        self.ax.set_autoscale_on(False)
-        
-        # Force a final redraw to ensure everything is visible
         self.canvas.draw_idle()
     
-    def update_predictions(self, location, confidence, all_predictions):
+    def update_predictions(self, location, confidence, top3_predictions):
         """
         Update contact probabilities based on prediction.
         
         Args:
-            location: Predicted location ('1'-'10' or 'no_touch')
+            location: Predicted location ('1'-'10')
             confidence: Confidence value (0-1)
-            all_predictions: Dictionary of {location: probability} for ALL locations (11 classes)
+            top3_predictions: Dictionary of {location: probability} for top 3
         """
-        # Update ALL probabilities (not just top 3)
-        # Ensure no_touch is always included
+        # Reset all probabilities
         for loc in self.locations:
-            self.location_probabilities[loc] = all_predictions.get(loc, 0.0)
+            self.location_probabilities[loc] = 0.0
         
-        # Explicitly ensure no_touch is in probabilities (in case it's missing)
-        if 'no_touch' not in self.location_probabilities:
-            self.location_probabilities['no_touch'] = all_predictions.get('no_touch', 0.0)
+        # Update with top 3 predictions
+        for loc, prob in top3_predictions.items():
+            self.location_probabilities[loc] = prob
         
         # Update prediction label
         if location:
-            if location == 'no_touch':
-                self.prediction_label.config(
-                    text=f"Predicted: No Touch ({confidence*100:.1f}%)",
-                    foreground="green" if confidence > 0.7 else "orange" if confidence > 0.5 else "red"
-                )
-            else:
-                self.prediction_label.config(
-                    text=f"Predicted: Location {location} ({confidence*100:.1f}%)",
-                    foreground="green" if confidence > 0.7 else "orange" if confidence > 0.5 else "red"
-                )
+            self.prediction_label.config(
+                text=f"Predicted: Location {location} ({confidence*100:.1f}%)",
+                foreground="green" if confidence > 0.7 else "orange" if confidence > 0.5 else "red"
+            )
         
         # Redraw grid
         self.draw_grid()
@@ -1278,9 +990,6 @@ class RealTimePredictorGUI:
         
         self.grid_viz_button = ttk.Button(control_frame, text="Show Grid Visualization", command=self.toggle_grid_viz)
         self.grid_viz_button.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        self.clear_buffers_button = ttk.Button(control_frame, text="Clear Buffers", command=self.clear_buffers)
-        self.clear_buffers_button.pack(side=tk.LEFT, padx=5, pady=5)
         
         # Model selection
         model_frame = ttk.Frame(control_frame)
@@ -1536,18 +1245,6 @@ class RealTimePredictorGUI:
         self.stop_button.config(state=tk.DISABLED)
         self.status_label.config(text="Status: Sensors stopped", foreground="orange")
     
-    def clear_buffers(self):
-        """Clear all data buffers and flush serial ports."""
-        if self.sensor_reader:
-            self.sensor_reader.clear_buffers()
-            self.sensor_reader.flush_serial_buffers()
-            self.status_label.config(text="Status: Buffers Cleared", foreground="green")
-            # Reset status after 2 seconds
-            self.root.after(2000, lambda: self.status_label.config(
-                text="Status: Running" if self.sensor_reader.running else "Status: Ready",
-                foreground="blue" if self.sensor_reader.running else "blue"
-            ))
-    
     def toggle_grid_viz(self):
         """Toggle grid visualization window."""
         if self.grid_viz_window is None or not self.grid_viz_window.running:
@@ -1720,7 +1417,7 @@ class RealTimePredictorGUI:
                 self.stretchmagtec_labels[sensor_id][3].config(text=f"Hz: {hz:.1f}")
             
             # Make predictions
-            location, confidence, all_predictions = self.model_predictor.predict_location(stretchmagtec_data)
+            location, confidence, top3_predictions = self.model_predictor.predict_location(stretchmagtec_data)
             predicted_forces = self.model_predictor.predict_force(stretchmagtec_data)
             
             # Predict stretch (only for combined model)
@@ -1735,14 +1432,11 @@ class RealTimePredictorGUI:
                 self.location_label.config(text="Location: Unknown", foreground="gray")
                 self.confidence_label.config(text="Confidence: 0.0%", foreground="gray")
             
-            # Update top 3 predictions (get top 3 from all_predictions)
-            sorted_all = sorted(all_predictions.items(), key=lambda x: x[1], reverse=True)
-            for i, (loc, prob) in enumerate(sorted_all[:3]):
+            # Update top 3 predictions
+            sorted_top3 = sorted(top3_predictions.items(), key=lambda x: x[1], reverse=True)
+            for i, (loc, prob) in enumerate(sorted_top3[:3]):
                 if i < len(self.top3_labels):
-                    if loc == 'no_touch':
-                        self.top3_labels[i].config(text=f"{i+1}. No Touch: {prob*100:.1f}%")
-                    else:
-                        self.top3_labels[i].config(text=f"{i+1}. Location {loc}: {prob*100:.1f}%")
+                    self.top3_labels[i].config(text=f"{i+1}. Location {loc}: {prob*100:.1f}%")
             
             # Update stretch prediction display (only for combined model)
             if self.model_predictor.current_model_type == "combined" and stretch_pred:
@@ -1766,9 +1460,9 @@ class RealTimePredictorGUI:
             for i, (name, value) in enumerate(zip(force_names, [predicted_forces['fx'], predicted_forces['fy'], predicted_forces['fz']])):
                 self.force_pred_labels[i].config(text=f"{name}: {value:7.3f}")
             
-            # Update grid visualization if open (pass ALL predictions so all taxels show percentages)
+            # Update grid visualization if open
             if self.grid_viz_window and self.grid_viz_window.running:
-                self.grid_viz_window.update_predictions(location, confidence, all_predictions)
+                self.grid_viz_window.update_predictions(location, confidence, top3_predictions)
             
             # Update plots
             self.update_plots()
