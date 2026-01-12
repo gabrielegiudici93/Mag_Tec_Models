@@ -11,3 +11,4 @@
 *.txt text
 *.yml text
 *.yaml text
+data/simulation/test_sim_experiment_stretch_shear_force_10_taxels/sim_experiment_shear_force_test51_shear_stretch_10_taxels_stretch_000pct.h5 filter=lfs diff=lfs merge=lfs -text
